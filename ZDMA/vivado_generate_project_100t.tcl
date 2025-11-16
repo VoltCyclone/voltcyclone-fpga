@@ -565,10 +565,57 @@ set_property -name "top_auto_set" -value "0" -objects $obj
 # Upgrade IP from the currently installed Vivado version
 upgrade_ip [get_ips *]
 
-# Generate all IP cores before synthesis
-puts "Generating IP cores..."
-generate_target all [get_ips *]
-puts "IP core generation completed."
+# Handle locked IP cores with comprehensive strategy
+puts "Checking IP core status..."
+report_ip_status -name ip_status -file ip_status_report.txt
+
+# Try to unlock and regenerate IP cores
+set locked_ips [get_ips -filter {IS_LOCKED == true}]
+if {[llength $locked_ips] > 0} {
+    puts "Found [llength $locked_ips] locked IP cores, attempting to unlock..."
+    foreach ip $locked_ips {
+        puts "Processing locked IP: [get_property NAME $ip]"
+        # Try to reset the IP to unlock it
+        catch {reset_target all $ip}
+        # Try to upgrade the IP
+        catch {upgrade_ip $ip}
+    }
+}
+
+# Force regeneration of all IP cores
+puts "Force regenerating all IP cores..."
+foreach ip [get_ips] {
+    set ip_name [get_property NAME $ip]
+    puts "Regenerating IP: $ip_name"
+    # Reset target to force regeneration
+    catch {reset_target all $ip}
+    # Generate new targets
+    catch {generate_target all $ip}
+}
+
+# Final attempt to generate all IP cores
+puts "Final IP core generation attempt..."
+set generation_failed 0
+foreach ip [get_ips] {
+    set ip_name [get_property NAME $ip]
+    if {[get_property IS_LOCKED $ip]} {
+        puts "WARNING: IP $ip_name is still locked after regeneration attempts"
+        set generation_failed 1
+    } else {
+        # Try final generation
+        if {[catch {generate_target all $ip} err]} {
+            puts "ERROR: Failed to generate $ip_name: $err"
+            set generation_failed 1
+        }
+    }
+}
+
+if {$generation_failed} {
+    puts "WARNING: Some IP cores could not be generated. Synthesis may fail."
+    puts "Consider regenerating IP cores with the current Vivado version."
+} else {
+    puts "All IP cores successfully generated."
+}
 
 # Set 'utils_1' fileset object
 set obj [get_filesets utils_1]
