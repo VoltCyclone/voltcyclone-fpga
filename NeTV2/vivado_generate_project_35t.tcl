@@ -188,6 +188,19 @@ set files [list \
 ]
 set imported_files [import_files -fileset sources_1 $files]
 
+# === FIX: Copy COE files to IP directories so XCI references resolve correctly ===
+# The XCI files reference COE files with relative paths. After import, we must
+# copy COE files to each IP's subdirectory where Vivado expects them.
+set ip_base_dir "$proj_dir/${_xil_proj_name_}.srcs/sources_1/ip"
+set coe_source_dir [file normalize "${origin_dir}/ip"]
+
+# Copy COE files to bram_pcie_cfgspace IP directory
+file mkdir "$ip_base_dir/bram_pcie_cfgspace"
+file copy -force "$coe_source_dir/pcileech_cfgspace.coe" "$ip_base_dir/bram_pcie_cfgspace/"
+
+puts "INFO: COE files copied to IP directories for proper initialization"
+# === END FIX ===
+
 # Set 'sources_1' fileset file properties for remote files
 # None
 
