@@ -928,3 +928,35 @@ move_dashboard_gadget -name {drc_1} -row 2 -col 0
 move_dashboard_gadget -name {timing_1} -row 0 -col 1
 move_dashboard_gadget -name {utilization_2} -row 1 -col 1
 move_dashboard_gadget -name {methodology_1} -row 2 -col 1
+
+# ============================================================================
+# SYNTHESIS AND IMPLEMENTATION
+# ============================================================================
+puts "INFO: Launching synthesis..."
+reset_run synth_1
+launch_runs synth_1 -jobs 4
+wait_on_run synth_1
+
+# Check synthesis status
+if {[get_property PROGRESS [get_runs synth_1]] != "100%"} {
+    error "ERROR: Synthesis failed!"
+}
+if {[get_property STATUS [get_runs synth_1]] != "synth_design Complete!"} {
+    error "ERROR: Synthesis did not complete successfully!"
+}
+
+puts "INFO: Synthesis completed successfully"
+puts "INFO: Launching implementation..."
+
+# Launch implementation
+launch_runs impl_1 -to_step write_bitstream -jobs 4
+wait_on_run impl_1
+
+# Check implementation status
+if {[get_property PROGRESS [get_runs impl_1]] != "100%"} {
+    error "ERROR: Implementation failed!"
+}
+
+puts "INFO: Implementation completed successfully"
+puts "INFO: Bitstream files (.bit and .bin) are available in:"
+puts "      ${_xil_proj_name_}.runs/impl_1/"
