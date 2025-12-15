@@ -658,6 +658,9 @@ set obj [get_runs impl_1]
 set_property set_report_strategy_name 1 $obj
 set_property report_strategy {Vivado Implementation Default Reports} $obj
 set_property set_report_strategy_name 0 $obj
+set_property -name "steps.opt_design.args.directive" -value "ExploreWithRemap" -objects $obj
+set_property -name "steps.opt_design.args.more_options" -value "-debug_log" -objects $obj
+set_property -name "steps.opt_design.tcl.post" -value "[file normalize \"${origin_dir}/opt_design_post.tcl\"]" -objects $obj
 # Create 'impl_1_init_report_timing_summary_0' report (if not found)
 if { [ string equal [get_report_configs -of_objects [get_runs impl_1] impl_1_init_report_timing_summary_0] "" ] } {
   create_report_config -report_name impl_1_init_report_timing_summary_0 -report_type report_timing_summary:1.0 -steps init_design -runs impl_1
