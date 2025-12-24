@@ -1,11 +1,12 @@
 PCILeech AC701 / FT601 PCIe to USB3:
-=================
+====================================
+
 This project contains software and HDL code for the Xilinx AC701 development board used together with the FTDI FT601 add-on board.
 Once flashed it may be used together with the [PCILeech Direct Memory Access (DMA) Attack Toolkit](https://github.com/ufrisk/pcileech/) or [MemProcFS - The Memory Process File System](https://github.com/ufrisk/MemProcFS/) to perform DMA attacks, dump memory or perform research.
 
-
 Capabilities:
-=================
+=============
+
 * Retrieve memory from the target system over USB3/USB-C in excess of 190MB/s.
 * Access all memory of target system without the need for kernel module (KMD) unless protected with VT-d/IOMMU.
 * Enumerate/Probe accessible memory at >1GB/s.
@@ -15,9 +16,9 @@ For information about more capabilities check out the general [PCILeech](https:/
 
 For information about other supported FPGA based devices please check out [PCILeech FPGA](https://github.com/ufrisk/pcileech-fpga/).
 
-
 The Hardware:
-=================
+=============
+
 * Xilinx AC701 development board. ([Xilinx](https://www.xilinx.com/products/boards-and-kits/ek-a7-ac701-g.html)) ([Digikey](https://www.digikey.com/product-detail/en/xilinx-inc/EK-A7-AC701-G/122-1838-ND/3903850))
 * FTDI FT601 USB3 UMFT601X-B add-on board. ([FTDI](http://www.ftdichip.com/Products/Modules/SuperSpeedModules.htm)) ([Digikey](https://www.digikey.com/product-detail/en/ftdi-future-technology-devices-international-ltd/UMFT601X-B/768-1303-ND/6556764))
 * Also recommended: PCIe extension cable (very low cost ones exists on eBay).
@@ -29,7 +30,8 @@ Please see below for correct jumper and microswitch settings:
 ###### GPIO_LED0 = blink on ft601 clk; GPIO_LED1 = lit; GPIO_LED2 = PCIe state; SW3 = RESET; SW5 = blink GPIO_LED1.
 
 Flashing:
-=================
+=========
+
 1) Ensure the both the AC701 and FT601 is configured correctly with correct jumpers and switches. Please see images above.
 2) Install Vivado WebPACK or Lab Edition (only for flashing).
 3) Build PCILeech AC701/FT601 (see below) alternatively download and unzip pre-built binary (see below in releases section).
@@ -41,19 +43,19 @@ Flashing:
 
 If this fails please check out the Xilinx documentation about how to manually flash with Vivado.
 
-
 Building:
-=================
+=========
+
 For building instructions please check out the [build readme](build.md) for information. The PCIe device will show as Xilinx Ethernet Adapter with Device ID 0x0666 on the target system by default. For instructions how to change the device id and other advanced build properties please also check out the [build readme](build.md) for information.
 
-
 Other Notes:
-=================
+============
+
 The completed solution contains Xilinx proprietary IP cores licensed under the Xilinx CORE LICENSE AGREEMENT. This project as-is published on Github contains no Xilinx proprietary IP. Published source code are licensed under the MIT License. The end user that have purchased a AC701 development board will have the proper licenses and will be able to re-generate Xilinx proprietary IP cores by running the build detailed above.
 
-
 Releases / Version History:
-=================
+===========================
+
 <details><summary>Previous releases (click to expand):</summary>
 v4.0
 * Major internal re-design for increased future flexibility and ease of use.
@@ -107,6 +109,7 @@ v4.13
 * Bug fixes.
 * New internal design with on-board PIO BAR support.
 * Download pre-built binary [here](https://mega.nz/file/1W4QgILB#t5pBSs2eznL8crm3GgSNRzbk1CSzb3_YSTI5Ok65-Ww) SHA256: `1607eed95b24b470be20b4ea710c0a4d0f446786a7acae939df4b827201cddea`
+
 </details>
 
 v4.14
