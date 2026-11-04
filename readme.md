@@ -24,7 +24,7 @@ PCILeech currently supports multiple FPGA based devices with most recent firmwar
 
 ###### *) PCILeech FPGA uses PCIe x1 even if more PCIe lanes are available hardware-wise. This is sufficient to deliver neccessary performance.
 
-Select the FPGA setup that best suits your needs from the above list. If performance and value for money is key the Screamer PCIe Squirrel is currently recommended. If performance is key alone ZDMA is a good pick.
+Select the FPGA setup that best suits your needs from the above list. If performance and value for money is key the CaptainDMA M2 is currently recommended. If performance is key alone ZDMA is a good pick.
 
 Check out the individual FPGA projects in the table above for more information about the purchase, usage, building and flashing of the devices. Each device have different advantages and disadvantages.
 
@@ -57,6 +57,6 @@ PCILeech also supports multiple FPGA based devices that may not have the most re
 | [SP605/FT601](sp605_ft601)             | USB3       | 75 MB/s        | 2.2     | PCIe gen1 x1  |
 | [Acorn/FT2232H](acorn_ft2232h)         | USB2       | 25 MB/s        | 4.9     | PCIe gen2 x4* |
 | [NeTV2](NeTV2)                         | UDP/IP     | 7 MB/s         | 4.12    | PCIe gen2 x4* |
-| [Screamer PCIe Squirrel](PCIeSquirrel) | USB-C      | 190 MB/s       | 4.14    | XC7A35T-484   |
-| [ScreamerM2](ScreamerM2)               | USB3/USB-C | 190 MB/s       | 4.14    | XC7A35T-325   |
+| [Screamer PCIe Squirrel](PCIeSquirrel) | USB-C      | 190 MB/s       | 4.14    | PCIe gen2 x1  |
+| [ScreamerM2](ScreamerM2)               | USB3/USB-C | 190 MB/s       | 4.14    | PCIe gen2 x4* |
 
