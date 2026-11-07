@@ -272,25 +272,55 @@ module pcileech_tlps128_dst64(
     IfPCIeTlpRxTx.source    tlp_tx,
     IfAXIS128.sink          tlps_in
 );
+    // tlps_in is a pull stream: tready in one clock requests one 128-bit beat,
+    // which arrives in the next clock and must be taken whatever tlp_tx.ready
+    // is then. The PCIe core takes a 64-bit word only when valid && ready.
+    // Beats therefore go through a two-entry queue, and a new beat is requested
+    // only when a slot is guaranteed for it even if the core stalls. A stalled
+    // word stays on tlp_tx unchanged until the core accepts it.
+    bit [127:0] q_tdata [2];
+    bit [3:0]   q_tkeepdw [2];
+    bit         q_tlast [2];
+    bit [1:0]   q_count = 0;
+    bit         q_head  = 0;
+    bit         q_upper = 0;     // the head beat's lower 64 bits were sent
 
-    bit [63:0]  d1_tdata;
-    bit         d1_tkeepdw2;
-    bit         d1_tlast;
-    bit         d1_tvalid = 0;
-    
-    assign tlps_in.tready = tlp_tx.ready && !(tlps_in.tvalid && tlps_in.tkeepdw[2]);
-    
-    wire tkeepdw2       = d1_tvalid ? d1_tkeepdw2 : tlps_in.tkeepdw[1];
-    assign tlp_tx.data  = d1_tvalid ? d1_tdata : tlps_in.tdata[63:0];
-    assign tlp_tx.last  = d1_tvalid ? d1_tlast : (tlps_in.tlast && !tlps_in.tkeepdw[2]);
-    assign tlp_tx.keep  = tkeepdw2 ? 8'hff : 8'h0f;
-    assign tlp_tx.valid = d1_tvalid || tlps_in.tvalid;
-    
+    wire        h_upper_dws = q_tkeepdw[q_head][2];
+    assign tlp_tx.valid = (q_count != 0);
+    assign tlp_tx.data  = q_upper ? q_tdata[q_head][127:64] : q_tdata[q_head][63:0];
+    assign tlp_tx.keep  = (q_upper ? q_tkeepdw[q_head][3] : q_tkeepdw[q_head][1]) ? 8'hff : 8'h0f;
+    assign tlp_tx.last  = q_tlast[q_head] && (q_upper || !h_upper_dws);
+
+    wire        fire    = tlp_tx.valid && tlp_tx.ready;
+    wire        pop     = fire && (q_upper || !h_upper_dws);
+    wire        push    = tlps_in.tvalid;
+    wire [1:0]  q_count_next = q_count + push - pop;
+
+    // A beat requested now arrives next clock: it needs a free slot even if
+    // nothing is popped then.
+    assign tlps_in.tready = !rst && (q_count_next <= 1);
+
     always @ ( posedge clk_pcie ) begin
-        d1_tvalid    <= !rst && tlps_in.tvalid && tlps_in.tkeepdw[2];
-        d1_tdata     <= tlps_in.tdata[127:64];
-        d1_tlast     <= tlps_in.tlast;
-        d1_tkeepdw2  <= tlps_in.tkeepdw[3];
+        if ( rst ) begin
+            q_count     <= 0;
+            q_head      <= 0;
+            q_upper     <= 0;
+        end
+        else begin
+            if ( push ) begin
+                q_tdata[q_head ^ q_count[0]]    <= tlps_in.tdata;
+                q_tkeepdw[q_head ^ q_count[0]]  <= tlps_in.tkeepdw;
+                q_tlast[q_head ^ q_count[0]]    <= tlps_in.tlast;
+            end
+            if ( pop ) begin
+                q_head  <= ~q_head;
+                q_upper <= 0;
+            end
+            else if ( fire ) begin
+                q_upper <= 1;
+            end
+            q_count <= q_count_next;
+        end
     end
 
 endmodule
