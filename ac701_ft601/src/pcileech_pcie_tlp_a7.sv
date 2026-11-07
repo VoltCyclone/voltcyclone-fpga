@@ -21,7 +21,9 @@ module pcileech_pcie_tlp_a7(
     IfAXIS128.sink_lite     tlps_rx,
     IfAXIS128.sink          tlps_static,
     IfShadow2Fifo.shadow    dshadow2fifo,
-    input [15:0]            pcie_id
+    input [15:0]            pcie_id,
+    IfPCIeSignals.mpro      pcie_ctx,       // read-only PCIe core status
+    input                   rst_pcie_user   // PCIe core user reset (PERST, link down)
     );
     
     IfAXIS128 tlps_bar_rsp();
@@ -37,6 +39,8 @@ module pcileech_pcie_tlp_a7(
         .clk            ( clk_pcie                      ),
         .bar_en         ( dshadow2fifo.bar_en           ),
         .pcie_id        ( pcie_id                       ),
+        .pcie_ctx       ( pcie_ctx                      ),
+        .rst_pcie_user  ( rst_pcie_user                 ),
         .tlps_in        ( tlps_rx                       ),
         .tlps_out       ( tlps_bar_rsp.source           )
     );

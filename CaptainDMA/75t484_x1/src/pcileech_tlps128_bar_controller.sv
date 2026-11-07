@@ -44,6 +44,8 @@ module pcileech_tlps128_bar_controller(
     input                   clk,
     input                   bar_en,
     input [15:0]            pcie_id,
+    IfPCIeSignals.mpro      pcie_ctx,       // read-only PCIe core status (unused here;
+    input                   rst_pcie_user,  // for generated controllers, e.g. MSI-X)
     IfAXIS128.sink_lite     tlps_in,
     IfAXIS128.source        tlps_out
 );
