@@ -100,7 +100,9 @@ module pcileech_pcie_a7(
         .tlps_rx                    ( tlps_rx.sink_lite         ),
         .tlps_static                ( tlps_static.sink          ),
         .dshadow2fifo               ( dshadow2fifo              ),
-        .pcie_id                    ( pcie_id                   )   // <- [15:0]
+        .pcie_id                    ( pcie_id                   ),   // <- [15:0]
+        .pcie_ctx                   ( ctx                       ),
+        .rst_pcie_user              ( rst_pcie_user             )
     );
     
     pcileech_tlps128_dst64 i_pcileech_tlps128_dst64(
