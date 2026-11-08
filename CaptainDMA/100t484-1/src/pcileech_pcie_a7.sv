@@ -151,7 +151,33 @@ module pcileech_pcie_a7(
         .cfg_mgmt_wr_rw1c_as_rw     ( ctx.cfg_mgmt_wr_rw1c_as_rw ), // <-
         .cfg_mgmt_di                ( ctx.cfg_mgmt_di           ),  // <- [31:0]
         .cfg_mgmt_wr_en             ( ctx.cfg_mgmt_wr_en        ),  // <-
-    
+
+        // Unused inputs tied inactive. Left unconnected, the IP's driverless
+        // nets fail opt_design (Opt31-67) under Vivado 2026.1.
+        // flow control: select 3'b000; fc_* outputs are unused.
+        .fc_sel                     ( 3'b000                    ),  // <- [2:0]
+        // error reporting: no user-reported errors. These are active-high
+        // requests; header/log values are sampled only with a request.
+        .cfg_err_ecrc               ( 1'b0                      ),  // <-
+        .cfg_err_ur                 ( 1'b0                      ),  // <-
+        .cfg_err_cpl_timeout        ( 1'b0                      ),  // <-
+        .cfg_err_cpl_unexpect       ( 1'b0                      ),  // <-
+        .cfg_err_cpl_abort          ( 1'b0                      ),  // <-
+        .cfg_err_posted             ( 1'b0                      ),  // <-
+        .cfg_err_cor                ( 1'b0                      ),  // <-
+        .cfg_err_atomic_egress_blocked ( 1'b0                   ),  // <-
+        .cfg_err_internal_cor       ( 1'b0                      ),  // <-
+        .cfg_err_malformed          ( 1'b0                      ),  // <-
+        .cfg_err_mc_blocked         ( 1'b0                      ),  // <-
+        .cfg_err_poisoned           ( 1'b0                      ),  // <-
+        .cfg_err_norecovery         ( 1'b0                      ),  // <-
+        .cfg_err_locked             ( 1'b0                      ),  // <-
+        .cfg_err_acs                ( 1'b0                      ),  // <-
+        .cfg_err_internal_uncor     ( 1'b0                      ),  // <-
+        .cfg_err_tlp_cpl_header     ( 48'h0                     ),  // <- [47:0]
+        .cfg_err_aer_headerlog      ( 128'h0                    ),  // <- [127:0]
+        .cfg_aer_interrupt_msgnum   ( 5'b00000                  ),  // <- [4:0]
+
         // special core config
         //.pcie_cfg_vend_id           ( dfifo_pcie.pcie_cfg_vend_id       ),  // <- [15:0]
         //.pcie_cfg_dev_id            ( dfifo_pcie.pcie_cfg_dev_id        ),  // <- [15:0]
