@@ -45,6 +45,7 @@ BENCHES = {
         "pcileech_req_tagalloc.sv",
     ],
     "tb_req_status": ["pcileech_req_status.sv"],
+    "tb_pcie_drp_startup": ["pcileech_pcie_drp_startup.sv"],
 }
 
 # Simulation-only models (in this directory) compiled with a bench, and the
@@ -106,6 +107,10 @@ def lint(rtl):
     argv = ["verilator", "--lint-only", "-Wall", "--top-module", top, "-I" + str(SRC)]
     if top == "pcileech_req_gate":
         argv += ["-GN_NP_MAX=36"]  # test fixture only; production must bind its plan
+    if top == "pcileech_pcie_drp_startup":
+        # test fixture only; production binds the tracking plan's DRP values
+        argv += ["-GPLAN_BOUND=1", "-GPLAN_MASK=16'h00f0", "-GPLAN_VALUE=16'h0050",
+                 "-GRDY_TIMEOUT_CYCLES=64"]
     argv += [str(SRC / f) for f in rtl]
     argv += [str(HERE / f) for f in LINT_STUBS.get(top, [])]
     res = subprocess.run(argv, capture_output=True, text=True)

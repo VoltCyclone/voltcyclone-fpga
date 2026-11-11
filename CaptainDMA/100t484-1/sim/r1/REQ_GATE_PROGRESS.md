@@ -111,3 +111,35 @@ Status-exposure checkpoint, 2026-11-11 (uncommitted):
   and Vivado CDC report on the handshake, board integration.
 - Pre-existing, unrelated: pcileech_fifo assigns dpcie.pcie_cfg_* fields that
   IfPCIeFifoCore does not declare.
+
+DRP startup checkpoint, 2026-11-11 (uncommitted):
+- pcileech_pcie_drp_startup (clk_sys): on each reset-source release, reads
+  PLAN_ADDR, refuses if bits outside PLAN_MASK differ from PLAN_BASE_EXPECT,
+  writes (read & ~MASK) | VALUE unless already equal, reads back and requires
+  the whole word. drp_ok (to gate rst_pcie_n) clears on every reset-source
+  assertion; a reset source during an attempt lets the in-flight transaction
+  finish and re-runs. Failures (rdy timeout / base / verify) hold drp_ok low
+  until the next reset-source assertion and record reason, saturating count,
+  read and verify words.
+- Shares the port with the pcileech_fifo bridge: a host request is latched and
+  issued only between startup transactions (startup has priority at idle);
+  host writes to PLAN_ADDR are answered with rdy, data 0, no core write, and
+  counted; host reads of PLAN_ADDR pass.
+- No usable defaults: PLAN_BOUND must be 1; RDY_TIMEOUT_CYCLES 16..65535;
+  PLAN_VALUE inside and PLAN_BASE_EXPECT outside PLAN_MASK (checked by
+  elaboration with direct values; all four bad plans rejected).
+- tb_pcie_drp_startup: DRP port protocol model (random rdy latency, mute,
+  dropped writes, base-bit corruption), sequence, skip-write, re-run per
+  reset, each failure kind, abort in each state, deferred host traffic and
+  refusal, saturation, watchdog. 16/16 run_r1 runs pass.
+- mut_drp_startup.py: 21/21 killed. Equivalent mutant excluded: ignoring the
+  abort at the first read's completion (WRITE still honours it; re-run
+  verifies the whole word).
+- Open: after an rdy timeout the port returns to the host; a late rdy from
+  the timed-out transaction could be taken as the answer to a later host
+  request. A DRP timeout already means the core is unusable, so this is
+  accepted and documented rather than handled.
+- Not done (step 3, touches the uncommitted reset/CDC draft):
+  rst_pcie_n <= cnt_done && !rst_pcie_src && drp_ok in pcileech_pcie_a7_rst,
+  instancing between dfifo_pcie.drp_* and the core, plan values from the
+  generator, and adding the DRP status to the RO map.
