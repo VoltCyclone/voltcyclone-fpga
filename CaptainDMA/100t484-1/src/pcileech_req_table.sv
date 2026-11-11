@@ -110,7 +110,6 @@ module pcileech_req_table #(
     wire [19:0] lk_rem  = lvt[lk_tag] ? rem_u[lk_tag] : rem_a[lk_tag];
     assign lk_state      = st[lk_tag];
     assign lk_host_tag   = lk_meta[12:5];
-    assign lk_superseded = sup[lk_tag];
     assign lk_remaining  = lk_rem[19:7];
     assign lk_next_la    = lk_rem[6:0];
     assign lk_tc         = lk_meta[4:2];
@@ -152,6 +151,8 @@ module pcileech_req_table #(
     wire [7:0] sup_old = rev[adm_host_tag];
     // (Marking a FREE holder is harmless: admission clears the flag.)
     wire       sup_hit = adm_valid && (sup_old != adm_tag) && (hostc[sup_old] == adm_host_tag);
+    // Same-edge admission makes the old completion ineligible for host delivery.
+    assign lk_superseded = sup[lk_tag] || (sup_hit && sup_old == lk_tag);
 
     wire iss_q = flr || fl[iss_tag];   // issue of an entry RESERVED at an FLR quarantines
 

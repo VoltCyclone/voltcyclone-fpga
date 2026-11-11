@@ -46,3 +46,45 @@ Completed 2026-11-10:
 Limits: gate synthesis/timing not run, no board/TCL or live-core integration,
 no hardware qualification; live-credit sizing still must bind N_NP_MAX. No
 commits or hardware operations performed. Next implementation: req_tx_obs.
+
+RX checkpoint, 2026-11-10:
+- Gate and standalone dependencies committed as cba2c6c at user request.
+- TX observer and RX completion path are now in the working tree.
+- run_r1.py passes all 10 cases, including 2,742 RX checks with the real table.
+- mut_rx.py catches 25/25 deliberate faults. A mutation that omitted format
+  checking initially survived because another shape check masked it. The invalid
+  format fixture now isolates the format check and that mutant is caught.
+- Independent review found a 4DW completion encoding escaping exact Fmt/Type
+  recognition. A failing regression preceded the Type-based malformed path fix.
+- Same-edge supersede is exposed in the table lookup. Terminal TC/Attr matching
+  and late BCM/CRS Unexpected handling are explicit in the parent contract.
+- run_gate_axis.py passes the actual gate/TX/RX converter/host-filter round trip
+  with two restored host completions, including a digest-only tail removal.
+- Sized the pre-existing src64 next_len addition explicitly for Verilator.
+- RX decisions/updates occur at the header edge. Core framing checks, the
+  measured ECRC-check-off baseline and combinational table lookup underpin this
+  implementation. EOF ECRC-error handling, exact core qualification and timing
+  remain integration work.
+- Next implementation is req_err. Coordinate timeout/RX concurrent events and
+  repeated RX errors with its queue capacity and overflow behavior.
+
+Error-report checkpoint, 2026-11-10:
+- req_err and its bench implement the three requester error channels, one report
+  per D0 clock, AER header DWORD order/retention, and a 512-entry four-bank FIFO.
+- tb_req_err passes 23,043 checks. The full timeout sweep plus 256 legal-rate RX
+  errors survives a 512-clock AER ownership delay. Full pop+push, bank wrap,
+  non-D0 discard accounting, pending reset and saturating telemetry also pass.
+- Review caught the initial masked-first-error wait deadlock. A regression failed
+  before the fix. Live mask eligibility and mask-change tests now cover it.
+  No arbitrary acknowledgement timeout was introduced.
+- mut_err.py catches 23/23 non-equivalent faults. The redundant latch eligibility
+  check can be removed without changing behavior because the live hold predicate
+  also checks eligibility. That equivalent mutation was excluded.
+- The converter-path fixture completes two reads and then injects a duplicate
+  and an illegal 4DW completion. Both reach the correct serialized error output.
+- Follow the documented non-D0 discard policy for queued and arriving events.
+  Finite-capacity overflow preserves old data and counts rejected newest events.
+- Synthesis/timing, coherent live AER-mask integration, and exact-core ANFE/mask/
+  acknowledgement behavior remain open. Both normal and escalated SSH attempts
+  to ramsey@192.168.3.252 failed authentication. A user question is pending.
+- Next implementation is status exposure and drp_startup.

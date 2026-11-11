@@ -1,10 +1,97 @@
-# R1 requester tracking — handoff for `req_gate` (next session)
+# R1 requester tracking handoff
+
+## Checkpoint update for requester error reporting
+
+`src/pcileech_req_err.sv` queues timeout, malformed and unexpected events in
+same-edge priority order. It has 512 entries with up to three enqueues per edge,
+four single-write RAM banks, and one report per available D0 cycle. CTO drives
+posted=0/no_recovery=0, and received-completion errors drive posted=1.
+`cfg_err_cpl_rdy` is irrelevant to these three channels.
+
+The header-log output reorders raw RX DWORDs to DW0[127:96]. An unmasked first
+error retains its header until `headerlog_set` indicates ownership. An already
+asserted ownership level allows later reports. Review caught a deadlock if a
+masked first error was allowed to wait indefinitely. RED→GREEN tests now cover
+masked first/all errors and a live mask change during a hold.
+
+`aer_uncor_mask[31:0]` must represent the core's live mask. Supplying that
+coherently after host writes, or qualifying an exact-core logging protocol,
+remains part of integration. CTO14, Unexpected16 and Malformed18 determine
+logging eligibility. The vendor-model follow-up is pending SSH authentication.
+
+The non-D0 policy counts/discards arrivals and queued events. Beyond capacity,
+the queue preserves older entries, counts rejected newest events and raises an
+overflow sticky. Report/suppression/overflow counters saturate. Occupancy and
+high-water occupancy are exposed for status integration.
+
+`tb_req_err` has 23,043 checks, including a 256-timeout plus 256-RX burst across
+a 512-clock header wait, full pop+push, wrap, masked events, power changes,
+pending reset, header order and counter saturation. Run
+`python3 sim/r1/mut_err.py` for the error-queue mutation campaign (23/23).
+`run_gate_axis.py` now completes two reads through the actual converters and
+routes one duplicate and one malformed completion through req_err to the error
+outputs. Current standalone suite has 11 cases.
+
+Next is status exposure and `drp_startup`. Board wiring, live AER mask access,
+exact-core error timing and synthesis/timing qualification remain open.
+
+## Checkpoint update for RX completions
+
+`src/pcileech_req_rx_cpl.sv` and `sim/r1/tb_req_rx_cpl.sv` implement the
+completion path against the actual table. The one-cycle output pipeline restores
+host tags, checks completion metadata, progresses split data, preserves poison,
+and removes TD/digests. Packet drops last through input tlast. The table lookup
+now exposes a same-edge supersede when a new request reuses a host tag.
+
+Run `python3 sim/r1/run_r1.py` for 10 cases including 2,742 RX checks.
+Run `python3 sim/r1/mut_rx.py` for the 25 RX/table mutations. The RX bench covers
+all statuses, FREE/RESERVED/QUARANTINED, split poison, gaps, all digest positions,
+4096-byte encoding, zero-length reads, same-edge deadline/FLR/supersede, counters,
+and reset. The interface command below also exercises two completed reads through
+the real TX/RX width converters and host filter.
+
+The receiver exposes separate combinational `unexpected_valid/header[95:0]`
+and `malformed_valid/header[127:0]` events for req_err. The original internal
+tag stays in error metadata. Stats count active completion retirements,
+unexpected, mismatch, BCM, CRS, superseded drops and malformed frames.
+
+The independent review caught illegal 4DW completion encodings escaping the
+first decoder. Type-based recognition and a malformed event now reject them.
+Header-edge updates rely on core-validated framing. Current receive ECRC checking
+is off. Handling EOF `rx_ecrc_err`, which src64 currently discards, is required
+when integrating a core with checking enabled. The combinational lookup/update
+and supersede path needs timing qualification.
+
+Timeout events can
+coincide with RX unexpected or malformed events. RX errors can recur independently
+of entry transitions, so FIFO acceptance/overflow handling must cover that traffic
+as well as the 256-entry timeout burst.
+
+## Checkpoint update for the TX issue observer
+
+The standalone gate, classifier, allocator, table and timeout limits are in
+`cba2c6c`. The TX observer is implemented in the working tree. Connect its
+`tx_data/valid/ready/last` to the core-facing 64-bit AXI stream and its
+`iss_valid/iss_tag` to the table. Use the link-session reset shared by the gate,
+width converter and table. FLR stays on the table's FLR input.
+
+The observer decodes Fmt/Type and retains the read flag and first-word Tag. It issues
+on the accepted final word. The table checks RESERVED ownership and samples
+its timestamp and control bits on that edge. `tx_err_drop` increments a
+saturating 16-bit counter. The table retains the tag through a core drop.
+
+Run `python3 sim/r1/run_r1.py` for the 9-case standalone suite, including 25
+observer checks. The observer bench caught 9/9 deliberate faults. Run
+`python3 sim/r1/run_gate_axis.py` for the interface test with the actual
+`pcileech_tlps128_dst64` converter. The TX path scoreboard checks six accepted
+words, two correctly issued tags and zero bypass events. Independent hardware
+review found no observer RTL issues.
+
+Board top and TCL wiring, status exposure, and timing qualification remain open.
 
 ## Checkpoint update: gate implemented (2026-11-10)
 
-The gate task below is now implemented, still **uncommitted and not connected to
-the board/project TCL**. The next R1 implementation is **`req_tx_obs`**, followed
-by `req_rx_cpl`; the original gate brief is retained below as acceptance context.
+The original gate brief below records the acceptance context for `cba2c6c`.
 
 - `src/pcileech_req_gate.sv`: flat-port core for Icarus, instantiates the real
   classifier/allocator and drives the table's admission port. Checks 7–8 refuse
@@ -56,8 +143,8 @@ include it.
 ---
 
 Written 2026-11-10. Everything below is in the isolated upstream checkout
-`/private/tmp/pcileech-completion/upstream/CaptainDMA/100t484-1`. All R1 RTL is
-**uncommitted** and **not wired into the board top or the project TCL**. Build the
+`/private/tmp/pcileech-completion/upstream/CaptainDMA/100t484-1`. Board top and
+project TCL wiring are pending. Build the
 donor only in the authorized isolated/logged/time-bounded scope
 (`ramsey@192.168.3.252`, `~/tmp2026/msix-completion`); physical reset/rebind/flash
 are **not** authorized.
@@ -197,9 +284,9 @@ non-equivalent mutants, fold equivalents out).
 
 ## After the gate
 
-`req_tx_obs` (issue at accepted tlast → ISSUED, start timer), then `req_rx_cpl`
-(§7 completion match/progress/restore, fixed-latency pipeline), `req_err` (§9 FIFO),
+`req_rx_cpl` (§7 completion match/progress/restore, fixed-latency pipeline), then
+`req_err` (§9 FIFO),
 status counters + the `pcileech_fifo.sv` `ro` map (§9), `drp_startup` (§11). Then wire
 into the board top + project TCL, build the parent `RequesterTrackingPlan`/emitter/
-manifest, run `hardware-safety-reviewer`, and the R2–R6 gates. Nothing is committed;
+manifest, run `hardware-safety-reviewer`, and the R2–R6 gates.
 **ask before committing** and use **no Co-Authored-By trailer**.

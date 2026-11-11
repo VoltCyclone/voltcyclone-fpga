@@ -21,6 +21,17 @@ BENCHES = {
     "tb_req_tagalloc": ["pcileech_req_tagalloc.sv"],
     "tb_req_cto_limits": ["pcileech_req_cto_limits.sv"],
     "tb_req_table": ["pcileech_req_table.sv", "pcileech_req_cto_limits.sv"],
+    "tb_req_err": ["pcileech_req_err.sv"],
+    "tb_req_rx_cpl": [
+        "pcileech_req_rx_cpl.sv",
+        "pcileech_req_table.sv",
+        "pcileech_req_cto_limits.sv",
+    ],
+    "tb_req_tx_obs": [
+        "pcileech_req_tx_obs.sv",
+        "pcileech_req_table.sv",
+        "pcileech_req_cto_limits.sv",
+    ],
     "tb_req_gate": [
         "pcileech_req_gate.sv",
         "pcileech_req_classify.sv",

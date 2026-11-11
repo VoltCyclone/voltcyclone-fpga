@@ -382,7 +382,7 @@ module pcileech_tlps128_src64(
     assign tlps_out.tuser[8:2]  = bar_hit;
     
     wire [3:0]  next_base   = (tlast || tvalid) ? 0 : len;
-    wire [3:0]  next_len    = next_base + 1 + tlp_rx.keep[4];
+    wire [3:0]  next_len    = next_base + 4'd1 + {3'd0, tlp_rx.keep[4]};
 
     always @ ( posedge clk_pcie )
         if ( rst ) begin

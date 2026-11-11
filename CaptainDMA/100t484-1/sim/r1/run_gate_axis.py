@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the gate scoreboard through its real IfAXIS128 adapter with Verilator.
+"""Run the gate and requester TX path with their real SystemVerilog interfaces.
 
 The ordinary R1 runner uses Icarus (which cannot elaborate these modports).
 This command also lints the adapter with -Wall and tests invalid NP-cap guards.
@@ -92,6 +92,32 @@ def main():
                     f"invalid cap {cap} was not rejected: {result.stdout}{result.stderr}"
                 )
             print(f"[PASS] rejected N_NP_MAX={cap}")
+
+        tx_obj = work / "tx_obj"
+        run(
+            [
+                "verilator",
+                "--binary",
+                "--timing",
+                "--top-module",
+                "tb_req_tx_path",
+                "-I" + str(SRC),
+                "--Mdir",
+                str(tx_obj),
+                adapter,
+                *sources,
+                str(SRC / "pcileech_pcie_a7.sv"),
+                str(SRC / "pcileech_pcie_tlp_a7.sv"),
+                str(SRC / "pcileech_req_tx_obs.sv"),
+                str(SRC / "pcileech_req_rx_cpl.sv"),
+                str(SRC / "pcileech_req_err.sv"),
+                str(HERE / "tb_req_tx_path.sv"),
+            ]
+        )
+        log = run([str(tx_obj / "Vtb_req_tx_path")], timeout=60)
+        if "R1_TB_PASS tb_req_tx_path" not in log or "R1_TB_FAIL" in log:
+            raise RuntimeError(log)
+        print(log.rstrip())
 
 
 if __name__ == "__main__":
