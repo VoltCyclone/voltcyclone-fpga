@@ -1,0 +1,30 @@
+KILLED ignore_class: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=59 rx=10/11 admits=2/2
+KILLED pass_orphan_tail: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=23201 rx=0/1 admits=0/0
+KILLED ignore_no_tag: R1_TB_FAIL no unexpected admission on refusal/pass cycle=312 rx=32/33 admits=32/32
+KILLED omit_np_cap: R1_TB_FAIL no unexpected admission on refusal/pass cycle=376 rx=38/39 admits=37/37
+KILLED cap_from_tag_width: R1_TB_FAIL no unexpected admission on refusal/pass cycle=376 rx=38/39 admits=37/37
+KILLED cap_off_by_one: R1_TB_FAIL no unexpected admission on refusal/pass cycle=234 rx=3/4 admits=3/3
+KILLED ignore_issued_count: R1_TB_FAIL no unexpected admission on refusal/pass cycle=399 rx=39/40 admits=37/37
+KILLED no_tag_rewrite: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=45 rx=8/10 admits=2/2
+KILLED rewrite_rid: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=45 rx=8/10 admits=2/2
+KILLED corrupt_keep: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=14 rx=2/8 admits=0/0
+KILLED corrupt_user: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=12 rx=0/8 admits=0/0
+KILLED corrupt_last: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=12 rx=0/8 admits=0/0
+KILLED gate_admit_on_sink: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=45 rx=8/10 admits=0/2
+KILLED take_tag_on_pass: R1_TB_FAIL admission metadata and allocated tag cycle=37 rx=8/10 admits=0/2
+KILLED ignore_extended_tags: R1_TB_FAIL stream drains without deadlock cycle=30360 rx=34/38 admits=33/37
+KILLED lowest_free_reuse: R1_TB_FAIL admission metadata and allocated tag cycle=421 rx=40/41 admits=37/38
+KILLED request_without_slot: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=12 rx=0/8 admits=0/0
+KILLED ignore_promised_input: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=12 rx=0/8 admits=0/0
+KILLED pop_without_pull: R1_TB_FAIL output must answer previous-cycle pull cycle=9 rx=0/8 admits=0/0
+KILLED suppress_output: R1_TB_FAIL stream drains without deadlock cycle=30014 rx=0/8 admits=0/0
+KILLED dont_advance_head: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=13 rx=1/8 admits=0/0
+KILLED overwrite_head: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=12 rx=0/8 admits=0/0
+KILLED forget_packet_drop: R1_TB_FAIL forwarded beat/keep/user/last equals independent scoreboard cycle=67 rx=10/11 admits=2/2
+KILLED reclassify_mid_packet: R1_TB_FAIL one matching refusal counter per packet cycle=76 rx=11/11 admits=2/2
+KILLED has_data_stuck_low: R1_TB_FAIL admitted beat retained under stall cycle=194 rx=0/1 admits=1/1
+KILLED reverse_reason_counters: R1_TB_FAIL one matching refusal counter per packet cycle=76 rx=11/11 admits=2/2
+KILLED count_pass_as_admitted: R1_TB_FAIL PASS traffic remains completely untracked cycle=35 rx=8/8 admits=0/0
+KILLED admitted_counter_wrap: R1_TB_FAIL admitted counter saturates while forwarding continues
+KILLED refusal_counter_wrap: R1_TB_FAIL each refusal counter saturates without affecting others
+R1_MUT_GATE_SUMMARY killed=29 total=29

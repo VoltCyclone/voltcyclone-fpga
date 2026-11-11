@@ -13,9 +13,14 @@
 `timescale 1ns / 1ps
 
 module pcileech_tlps128_cfgspace_shadow(
-    input                   rst,
+    input                   rst,            // clk_pcie synchronous reset
+    input                   rst_sys,        // clk_sys register: rst of the clk_sys<->clk_pcie FIFOs
     input                   clk_pcie,
     input                   clk_sys,
+    // controls already carried into clk_pcie (dshadow2fifo copies are clk_sys)
+    input                   cfgtlp_en,
+    input                   cfgtlp_zero,
+    input                   cfgtlp_wren,
     IfAXIS128.sink_lite     tlps_in,
     input [15:0]            pcie_id,
     IfAXIS128.source        tlps_cfg_rsp,
@@ -45,7 +50,7 @@ module pcileech_tlps128_cfgspace_shadow(
     wire    [9:0]       usb_rx_addr;
     wire                usb_rx_addr_lo;
     fifo_49_49_clk2 i_fifo_49_49_clk2(
-        .rst            ( rst                       ),
+        .rst            ( rst_sys                   ),
         .wr_clk         ( clk_sys                   ),
         .rd_clk         ( clk_pcie                  ),
         .wr_en          ( dshadow2fifo.rx_rden || dshadow2fifo.rx_wren ),
@@ -62,9 +67,9 @@ module pcileech_tlps128_cfgspace_shadow(
     // (1) PCIe (if enabled), (2) USB, (3) INTERNAL.
     // Collisions will be discarded (it's assumed that they'll be very rare)
     // ----------------------------------------------------------------------------
-    wire            bram_wr_1_tlp = pcie_rx_wren & dshadow2fifo.cfgtlp_en;
+    wire            bram_wr_1_tlp = pcie_rx_wren & cfgtlp_en;
     wire            bram_wr_2_usb = ~bram_wr_1_tlp & usb_rx_wren;
-    wire [3:0]      bram_wr_be = bram_wr_1_tlp ? (dshadow2fifo.cfgtlp_wren ? pcie_rx_be : 4'b0000) : (bram_wr_2_usb ? usb_rx_be : 4'b0000);
+    wire [3:0]      bram_wr_be = bram_wr_1_tlp ? (cfgtlp_wren ? pcie_rx_be : 4'b0000) : (bram_wr_2_usb ? usb_rx_be : 4'b0000);
     wire [31:0]     bram_wr_data = bram_wr_1_tlp ? pcie_rx_data : (bram_wr_2_usb ? usb_rx_data : 32'h00000000);
     
     // ----------------------------------------------------------------------------
@@ -81,11 +86,11 @@ module pcileech_tlps128_cfgspace_shadow(
     wire [7:0]      bram_rd_tag;
     wire [9:0]      bram_rd_addr;
     wire [31:0]     bram_rd_data;
-    wire [31:0]     bram_rd_data_z  = dshadow2fifo.cfgtlp_zero ? 32'h00000000 : bram_rd_data;
+    wire [31:0]     bram_rd_data_z  = cfgtlp_zero ? 32'h00000000 : bram_rd_data;
     wire            bram_rd_valid   = (bram_rd_tp == `S_SHADOW_CFGSPACE_TLP);
     wire            bram_rd_tlpwr;
     
-    wire            bram_rd_1_tlp   = pcie_rx_rden & dshadow2fifo.cfgtlp_en;
+    wire            bram_rd_1_tlp   = pcie_rx_rden & cfgtlp_en;
     wire            bram_tlp        = bram_rd_1_tlp | bram_wr_1_tlp;
     wire            bram_rd_2_usb   = ~bram_tlp & usb_rx_rden;
     wire [1:0]      bram_rdreq_tp   = bram_tlp ? `S_SHADOW_CFGSPACE_TLP : (bram_rd_2_usb ? `S_SHADOW_CFGSPACE_USB : `S_SHADOW_CFGSPACE_IDLE);
@@ -127,7 +132,7 @@ module pcileech_tlps128_cfgspace_shadow(
     
     // USB REPLY:
     fifo_43_43_clk2 i_fifo_43_43_clk2(
-        .rst            ( rst                       ),
+        .rst            ( rst_sys                   ),
         .wr_clk         ( clk_pcie                  ),
         .rd_clk         ( clk_sys                   ),
         .wr_en          ( (bram_rd_tp == `S_SHADOW_CFGSPACE_USB) ),

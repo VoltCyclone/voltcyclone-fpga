@@ -66,28 +66,64 @@ create_clock -period 10.000 -name net_ft601_clk -waveform {0.000 5.000} [get_por
 set_property IOSTANDARD LVCMOS33 [get_ports ft601_clk]
 set_property PACKAGE_PIN K18 [get_ports ft601_clk]
 
-set_input_delay -clock [get_clocks net_ft601_clk] -min 6.5 [get_ports {ft601_data[*]}]
+# FTDI FT600/FT601 datasheet v1.06 table 4.2: at 100 MHz, input arrival
+# spans 3.5..7.0 ns; receiver setup/hold are 1.0/4.8 ns. SDC represents
+# the positive external hold requirement with NEGATIVE output -min.
+# AN_421's 6.5/+4.8 example values do not express these datasheet limits.
+# These device-pin values still assume zero board delay. Board qualification
+# must add clock/data trace mismatch to inputs and round-trip delay to outputs;
+# the board trace delays have not been measured or established here.
+set_input_delay -clock [get_clocks net_ft601_clk] -min 3.5 [get_ports {ft601_data[*]}]
 set_input_delay -clock [get_clocks net_ft601_clk] -max 7.0 [get_ports {ft601_data[*]}]
-set_input_delay -clock [get_clocks net_ft601_clk] -min 6.5 [get_ports ft601_rxf_n]
+set_input_delay -clock [get_clocks net_ft601_clk] -min 3.5 [get_ports ft601_rxf_n]
 set_input_delay -clock [get_clocks net_ft601_clk] -max 7.0 [get_ports ft601_rxf_n]
-set_input_delay -clock [get_clocks net_ft601_clk] -min 6.5 [get_ports ft601_txe_n]
+set_input_delay -clock [get_clocks net_ft601_clk] -min 3.5 [get_ports ft601_txe_n]
 set_input_delay -clock [get_clocks net_ft601_clk] -max 7.0 [get_ports ft601_txe_n]
 
 set_output_delay -clock [get_clocks net_ft601_clk] -max 1.0 [get_ports {ft601_wr_n ft601_rd_n ft601_oe_n}]
-set_output_delay -clock [get_clocks net_ft601_clk] -min 4.8 [get_ports {ft601_wr_n ft601_rd_n ft601_oe_n}]
+set_output_delay -clock [get_clocks net_ft601_clk] -min -4.8 [get_ports {ft601_wr_n ft601_rd_n ft601_oe_n}]
 set_output_delay -clock [get_clocks net_ft601_clk] -max 1.0 [get_ports {{ft601_be[*]} {ft601_data[*]}}]
-set_output_delay -clock [get_clocks net_ft601_clk] -min 4.8 [get_ports {{ft601_be[*]} {ft601_data[*]}}]
+set_output_delay -clock [get_clocks net_ft601_clk] -min -4.8 [get_ports {{ft601_be[*]} {ft601_data[*]}}]
 
 set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_OE_N_reg]
 set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_RD_N_reg]
 set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_WR_N_reg]
-set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_DATA_OUT_reg[0][*]]
+# Data OFFs and tristate TFFs request IOB packing on their RTL instances.
 
-set_multicycle_path 2 -from [get_pins i_pcileech_com/i_pcileech_ft601/OE_reg/C] -to [get_ports {{ft601_be[*]} {ft601_data[*]}}]
-set_false_path -from [get_pins {tickcount64_reg[*]/C}]
-set_false_path -from [get_pins {i_pcileech_fifo/_pcie_core_config_reg[*]/C}]
-set_false_path -from [get_pins i_pcileech_pcie_a7/i_pcie_7x_0/inst/inst/user_lnk_up_int_reg/C] -to [get_pins {i_pcileech_fifo/_cmd_tx_din_reg[16]/D}]
-set_false_path -from [get_pins i_pcileech_pcie_a7/i_pcie_7x_0/inst/inst/user_reset_out_reg/C]
+# Per-pin FT601 tristate registers are timed as ordinary single-cycle outputs.
+# The former OE_reg multicycle exception does not apply to these registers.
+# Clock-domain crossings are made in RTL with XPM synchronizers (xpm_cdc_single,
+# xpm_cdc_async_rst, xpm_cdc_handshake), which carry their own scoped
+# constraints. The only additional internal exception is the documented
+# asynchronous PCIe IP reset boundary below; no clock groups are disabled.
+#
+# Asynchronous board inputs with no clock relationship, each feeding only its
+# XPM synchronizer in pcileech_100t484_x1_top:
+#   user_sw2_n   - pushbutton -> xpm_cdc_single (D pin of the first ASYNC_REG stage)
+#   pcie_present - slot PRSNT# status level -> xpm_cdc_single (D pin of the first stage)
+#   pcie_perst_n - PERST# -> xpm_cdc_async_rst: drives the asynchronous
+#                  clear/preset pins of ALL its reset stages (asynchronous
+#                  assert, clk release), possibly through an inverter.
+# Synthesized fanout was checked on Vivado 2026.1: the two level inputs
+# reach only stage-0 D, and PERST# reaches the four reset-stage CLR pins.
+set_false_path -from [get_ports user_sw2_n] -to [get_pins -hier -filter {NAME == "i_cdc_user_sw2_n/syncstages_ff_reg[0]/D"}]
+set_false_path -from [get_ports pcie_present] -to [get_pins -hier -filter {NAME == "i_cdc_pcie_present/syncstages_ff_reg[0]/D"}]
+set_false_path -from [get_ports pcie_perst_n] -to [get_pins -hier -filter {NAME =~ i_cdc_pcie_perst_n/arststages_ff_reg*/CLR}]
+
+# PG054 System Interface defines sys_rst_n as asynchronous. AMD's 2026.1
+# pcie_7x_v3_3/ttcl/xilinx_pcie_2_1_7x_x0y0_xdc.ttcl exempts that input in
+# the example design. Here its source is a clk_sys register, so restrict the
+# equivalent exception to that register AND this IP reset input. Routed
+# all_fanout/report_exceptions verified seven endpoints, all inside this IP.
+# Reset pulse duration is enforced in pcileech_pcie_a7_rst; this exception
+# does not waive any FIFO reset crossing or user logic timing path.
+set_false_path -from [get_pins i_pcileech_pcie_a7/i_pcileech_pcie_a7_rst/rst_pcie_n_reg/C] -through [get_pins i_pcileech_pcie_a7/i_pcie_7x_0/sys_rst_n]
+# Outputs with no clock relationship to any external device:
+#   user_ld1_n, user_ld2_n - indicator LEDs
+#   ft601_rst_n            - FT601 RESET_N, an asynchronous reset input of the
+#                            FT601, driven by the rst register in clk (glitch-free,
+#                            at least 65 clk periods low)
+set_false_path -to [get_ports {user_ld1_n user_ld2_n ft601_rst_n}]
 
 #PCIe signals
 set_property PACKAGE_PIN A13 [get_ports pcie_present]

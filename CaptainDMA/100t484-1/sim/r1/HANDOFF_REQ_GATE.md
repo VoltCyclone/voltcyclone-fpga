@@ -1,5 +1,27 @@
 # R1 requester tracking handoff
 
+## New-session checkpoint — 2026-11-11
+
+Committed as `9fa747f33da292d3ae6d3ebdee32dfbc348718fc`
+(`feat: implement requester completion and error tracking`), based on `cba2c6c`.
+Only requester work and one src64 width-fix hunk were committed. The unrelated
+eight-file reset/CDC draft is still dirty; preserve it. Nothing was pushed.
+
+The authoritative continuation handoff is now
+`/Users/ramseymcgrath/code/PCILeechFWGenerator/docs/development/HANDOFF_REQ_GATE.md`.
+It supersedes historical checkpoint counts/working-tree claims below. A clean
+export matching the committed tree passed all 11 R1 cases plus the real
+adapter/converter/filter simulation (6 core words, 2 host completions, 2 errors).
+Durable commit patch, logs, hashes and review materials are under the parent's
+`docs/development/msix-evidence/2026-11-11/r1-requester-commit/`.
+
+The user is handling review separately. Claude's reduced production-only review
+returned at shutdown and was archived **untriaged**; no findings were accepted
+or fixed. It omitted the external contract and test source, so reconcile its
+claims with the contract before changing policy. No review process remains.
+Do not launch another review automatically. Next implementation remains status
+exposure/CDC/RO map, startup DRP, board/TCL wiring, then parent plan/emitter.
+
 ## Checkpoint update for requester error reporting
 
 `src/pcileech_req_err.sv` queues timeout, malformed and unexpected events in

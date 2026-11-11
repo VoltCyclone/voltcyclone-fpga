@@ -1,0 +1,3 @@
+R1_TB_FAIL stream drains without deadlock cycle=30014 rx=0/8 admits=0/0
+FATAL: /private/tmp/pcileech-completion/upstream/CaptainDMA/100t484-1/sim/r1/tb_req_gate.sv:87: 
+       Time: 300140000  Scope: tb_req_gate.check

@@ -51,8 +51,12 @@ module pcileech_100t484_x1_top #(
     );
     
     // SYS
-    wire            rst;
-    
+    // rst is a clk-domain register (never a combinational decode), so it is
+    // glitch-free wherever it is used as a reset or crossed into another clock
+    // domain. Every other domain derives its own reset from it at the boundary.
+    reg             rst = 1'b1;
+    reg             rst_cfg_reload = 1'b0;
+
     // FIFO CTL <--> COM CTL
     wire [63:0]     com_dout;
     wire            com_dout_valid;
@@ -72,17 +76,66 @@ module pcileech_100t484_x1_top #(
     IfShadow2Fifo   dshadow2fifo();
 	
     // ----------------------------------------------------
+    // ASYNCHRONOUS BOARD INPUTS -> CLK
+    // user_sw2_n and pcie_present are independent static levels: one
+    // single-bit synchronizer each. PERST# is a reset: asserted asynchronously,
+    // released synchronously to clk. Nothing else reads these pins.
+    // ----------------------------------------------------
+
+    wire            user_sw2_n_clk;
+    wire            pcie_present_clk;
+    wire            pcie_perst_n_clk;
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )
+    ) i_cdc_user_sw2_n (
+        .src_clk            ( 1'b0                  ),
+        .src_in             ( user_sw2_n            ),
+        .dest_clk           ( clk                   ),
+        .dest_out           ( user_sw2_n_clk        )
+    );
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )
+    ) i_cdc_pcie_present (
+        .src_clk            ( 1'b0                  ),
+        .src_in             ( pcie_present          ),
+        .dest_clk           ( clk                   ),
+        .dest_out           ( pcie_present_clk      )
+    );
+
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .RST_ACTIVE_HIGH    ( 0                     )
+    ) i_cdc_pcie_perst_n (
+        .src_arst           ( pcie_perst_n          ),
+        .dest_clk           ( clk                   ),
+        .dest_arst          ( pcie_perst_n_clk      )
+    );
+
+    // ----------------------------------------------------
     // TickCount64 CLK
     // ----------------------------------------------------
 
     time tickcount64 = 0;
     time tickcount64_reload = 0;
     always @ ( posedge clk ) begin
-        tickcount64         <= user_sw2_n ? (tickcount64 + 1) : 0;
-        tickcount64_reload  <= user_sw2_n ? 0 : (tickcount64_reload + 1);
+        tickcount64         <= user_sw2_n_clk ? (tickcount64 + 1) : 0;
+        tickcount64_reload  <= user_sw2_n_clk ? 0 : (tickcount64_reload + 1);
+        // Registered: asserted while SW2 is pressed and for the first 64
+        // ticks after power-up or release (one tick longer than before).
+        rst                 <= ~user_sw2_n_clk || ((tickcount64 < 64) ? 1'b1 : 1'b0);
+        // Registered: drives STARTUPE2.GSR, which must never see a glitch.
+        rst_cfg_reload      <= (tickcount64_reload > 500000000) ? 1'b1 : 1'b0;
     end
 
-    assign rst = ~user_sw2_n || ((tickcount64 < 64) ? 1'b1 : 1'b0);
     assign ft601_rst_n = ~rst;
     wire led_pwronblink = ~user_sw1_n ^ (tickcount64[24] & (tickcount64[63:27] == 0));
     
@@ -125,9 +178,9 @@ module pcileech_100t484_x1_top #(
     ) i_pcileech_fifo (
         .clk                ( clk                   ),
         .rst                ( rst                   ),
-        .rst_cfg_reload     ( (tickcount64_reload > 500000000) ? 1'b1 : 1'b0 ),     // config reload after 5s button press
-        .pcie_present       ( pcie_present          ),
-        .pcie_perst_n       ( pcie_perst_n          ),
+        .rst_cfg_reload     ( rst_cfg_reload        ),     // config reload after 5s button press
+        .pcie_present       ( pcie_present_clk      ),
+        .pcie_perst_n       ( pcie_perst_n_clk      ),
         // FIFO CTL <--> COM CTL
         .dcom               ( dcom_fifo.mp_fifo     ),
         // FIFO CTL <--> PCIe
@@ -151,7 +204,7 @@ module pcileech_100t484_x1_top #(
         .pcie_rx_n          ( pcie_rx_n             ),
         .pcie_clk_p         ( pcie_clk_p            ),
         .pcie_clk_n         ( pcie_clk_n            ),
-        .pcie_perst_n       ( pcie_perst_n          ),
+        .pcie_perst_n       ( pcie_perst_n_clk      ),  // synchronized to clk
         // State and Activity LEDs
         .led_state          ( led_pcie              ),
         // FIFO CTL <--> PCIe

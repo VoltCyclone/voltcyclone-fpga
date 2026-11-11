@@ -78,14 +78,63 @@ module pcileech_com (
             64'h00000003_80182377
         };
         
+    // ----------------------------------------------------------------------------
+    // RESETS:
+    // rst is a clk-domain register. rst_com is its clk_com copy: asserted
+    // asynchronously (so it holds even while ft601_clk is stopped - the FT601
+    // is itself in reset then) and released synchronously to clk_com.
+    // ----------------------------------------------------------------------------
+    wire rst_com;
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .RST_ACTIVE_HIGH    ( 1                     )
+    ) i_cdc_rst_com (
+        .src_arst           ( rst                   ),
+        .dest_clk           ( clk_com               ),
+        .dest_arst          ( rst_com               )
+    );
+
     time tickcount64 = 0;
     always @ ( posedge clk )
         tickcount64 <= rst ? 0 : tickcount64 + 1;
-        
+
     time tickcount64_com = 0;
     always @ ( posedge clk_com )
-        tickcount64_com <= rst ? 0 : tickcount64_com + 1;
-            
+        tickcount64_com <= rst_com ? 0 : tickcount64_com + 1;
+
+    // RX clock-crossing FIFO reset: held for two clk_com ticks after rst_com
+    // releases. A flop with rst_com as asynchronous preset, so the FIFO's
+    // asynchronous rst pin is never driven by a LUT and assertion still does
+    // not wait for clk_com.
+    reg rst_comrx_fifo = 1'b1;
+    always @ ( posedge clk_com or posedge rst_com )
+        if ( rst_com )
+            rst_comrx_fifo <= 1'b1;
+        else
+            rst_comrx_fifo <= (tickcount64_com < 2);
+
+    // TX clock-crossing FIFO reset (wr_clk = clk, rd_clk = clk_com): a clk
+    // register held from rst until the clk_com side has itself left reset.
+    // rst_comrx_fifo (a clk_com register, released two clk_com ticks after
+    // rst_com) crosses back to clk through an XPM reset synchronizer, so the
+    // FIFO's read side has run clk_com for several edges with reset asserted
+    // even when ft601_clk was stopped for the whole of rst. No loop: the
+    // clk_com side depends only on rst. The pulse is never shorter than rst.
+    wire rst_comrx_fifo_clk;
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .RST_ACTIVE_HIGH    ( 1                     )
+    ) i_cdc_rst_comtx_clk (
+        .src_arst           ( rst_comrx_fifo        ),
+        .dest_clk           ( clk                   ),
+        .dest_arst          ( rst_comrx_fifo_clk    )
+    );
+    reg rst_comtx_fifo = 1'b1;
+    always @ ( posedge clk )
+        rst_comtx_fifo <= rst || rst_comrx_fifo_clk;
+
     wire        initial_rx_valid    = ~rst & (tickcount64 >= 16) & (tickcount64 < $size(initial_rx) + 16);
     wire [63:0] initial_rx_data     = initial_rx_valid ? initial_rx[tickcount64 - 16] : 64'h0;
     
@@ -105,7 +154,7 @@ module pcileech_com (
     wire        com_rx_valid;
    
     always @ ( posedge clk_com )
-        if ( rst | (~com_rx_valid32 & com_rx_valid64_dw[0] & com_rx_valid64_dw[1]) )
+        if ( rst_com | (~com_rx_valid32 & com_rx_valid64_dw[0] & com_rx_valid64_dw[1]) )
             com_rx_valid64_dw <= 2'b00;
         else if ( com_rx_valid32 && (com_rx_data32 == 32'h66665555) && (com_rx_data64[31:0] == 32'h66665555) )
             // resync logic to allow the host to send resync data that will
@@ -119,7 +168,7 @@ module pcileech_com (
             end
     
     fifo_64_64_clk2_comrx i_fifo_64_64_clk2_comrx(
-        .rst            ( rst | (tickcount64_com<2) ),
+        .rst            ( rst_comrx_fifo            ),
         .wr_clk         ( clk_com                   ),
         .rd_clk         ( clk                       ),
         .din            ( com_rx_data64             ),
@@ -151,12 +200,13 @@ module pcileech_com (
     
     wire        out_buffer1_almost_full;
 
-    assign dfifo.com_din_ready  = ~out_buffer1_almost_full;
+    // No writes are offered while the TX FIFO is still held in reset.
+    assign dfifo.com_din_ready  = ~out_buffer1_almost_full & ~rst_comtx_fifo;
     assign led_state_txdata     = com_tx_prog_full ^ led_state_invert;
     
     fifo_32_32_clk1_comtx i_fifo_32_32_clk2_comtx(
         .clk            ( clk_com                   ),
-        .srst           ( rst                       ),
+        .srst           ( rst_com                   ),
         .din            ( com_tx_data               ),
         .wr_en          ( com_tx_wr_en              ),
         .rd_en          ( core_din_ready            ),
@@ -171,7 +221,7 @@ module pcileech_com (
     fifo_256_32_clk2_comtx i_fifo_256_32_clk2_comtx(
         .rd_clk         ( clk_com                   ),
         .wr_clk         ( clk                       ),
-        .rst            ( rst                       ),
+        .rst            ( rst_comtx_fifo            ),
         .din            ( dfifo.com_din             ),
         .wr_en          ( dfifo.com_din_wr_en       ),
         .rd_en          ( ~com_tx_almost_full       ),
@@ -190,7 +240,7 @@ module pcileech_com (
     pcileech_ft601 i_pcileech_ft601(
         // SYS
         .clk                ( clk_com               ),
-        .rst                ( rst                   ),
+        .rst                ( rst_com               ),
         // TO/FROM FT601 PADS
         .FT601_DATA         ( ft601_data            ),
         .FT601_BE           ( ft601_be              ),
@@ -217,7 +267,7 @@ module pcileech_com (
     pcileech_eth i_pcileech_eth(
         // SYS
         .clk                ( clk_com               ),
-        .rst                ( rst                   ),
+        .rst                ( rst_com               ),
         // MAC/RMII
         .eth_clk50          ( eth_clk50             ),
         .eth_rst_n          ( eth_rst_n             ),
