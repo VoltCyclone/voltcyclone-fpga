@@ -209,7 +209,7 @@ module pcileech_fifo #(
     localparam          RWPOS_DRP_WR_EN             = 21;
     localparam          RWPOS_GLOBAL_SYSTEM_RESET   = 31;
     
-    wire    [319:0]     ro;
+    wire    [831:0]     ro;
     reg     [239:0]     rw;
     
     // special non-user accessible registers 
@@ -249,7 +249,9 @@ module pcileech_fifo #(
     assign ro[287:274]  = 0;                            //       SLACK
     // CUSTOM_VALUE
     assign ro[319:288]  = PARAM_CUSTOM_VALUE;           // +024: CUSTOM VALUE
-    // +028
+    // PCIe REQUESTER STATUS (R1): coherent clk_pcie snapshot, layout in pcileech_req_status.sv
+    assign ro[831:320]  = dpcie.req_status;             // +028: MAGIC/VERSION 0x5201 .. +067
+    // +068
     
     // ------------------------------------------------------------------------
     // INITIALIZATION/RESET BLOCK _AND_

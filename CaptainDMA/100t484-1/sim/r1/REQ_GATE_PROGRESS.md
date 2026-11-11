@@ -88,3 +88,26 @@ Error-report checkpoint, 2026-11-10:
   acknowledgement behavior remain open. Both normal and escalated SSH attempts
   to ramsey@192.168.3.252 failed authentication. A user question is pending.
 - Next implementation is status exposure and drp_startup.
+
+Status-exposure checkpoint, 2026-11-11 (uncommitted):
+- pcileech_req_status samples every requester counter, live count and sticky
+  on one clk_pcie edge and carries the word to clk_sys through
+  xpm_cdc_handshake (pattern of the draft's pcileech_pcie_cfgword_cdc; no reset
+  on the handshake, FSM, sequence or snapshot). It owns the timed_out counter
+  (counts table to_valid; abort-reset) and a saturating session-abort count
+  that survives the abort. Continuous snapshots; a stopped clk_pcie leaves the
+  last one readable with a frozen sequence word.
+- 512-bit block at pcileech_fifo ro +0x028 (ro grows to [831:0], SIZEOF 0x68)
+  via new IfPCIeFifoCore.req_status. Layout documented in the module header,
+  magic/version 0x5201. Driver of dfifo_pcie.req_status lands with board
+  integration (step 3); until then the field is undriven.
+- tb_req_status: coherence (all fields decode to one edge), layout, counter
+  saturation/reset, flags, liveness and stopped clock at four clock ratios
+  (16/10, 8/10, 2.7/41, 97/10 ns). sim/r1 now carries a sim-only XPM handshake
+  model and a lint blackbox. run_r1.py: 15/15 runs pass with -Wall lint.
+- mut_status.py: 23/23 killed (3 by the XPM usage-rule check). Equivalent
+  mutant excluded: removing the S_DRAIN wait (S_IDLE also waits for !src_rcv).
+- Not covered: DRP_STARTUP_FAIL/word (added with drp_startup), synthesis/timing
+  and Vivado CDC report on the handshake, board integration.
+- Pre-existing, unrelated: pcileech_fifo assigns dpcie.pcie_cfg_* fields that
+  IfPCIeFifoCore does not declare.

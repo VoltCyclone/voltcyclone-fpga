@@ -44,6 +44,26 @@ BENCHES = {
         "pcileech_req_classify.sv",
         "pcileech_req_tagalloc.sv",
     ],
+    "tb_req_status": ["pcileech_req_status.sv"],
+}
+
+# Simulation-only models (in this directory) compiled with a bench, and the
+# port-only stubs that stand in for them when linting the RTL.
+SIM_MODELS = {"tb_req_status": ["xpm_cdc_handshake_model.sv"]}
+LINT_STUBS = {"pcileech_req_status": ["xpm_cdc_handshake_bbox.sv"]}
+
+# bench -> parameter sets; each set is a separate run.
+CASES = {
+    "tb_req_gate": [{"CAP": cap} for cap in (3, 36, 256)],
+    "tb_req_status": [
+        {"PCIE_PS": pcie, "SYS_PS": sys_}
+        for pcie, sys_ in (
+            (16000, 10000),
+            (8000, 10000),
+            (2700, 41000),
+            (97000, 10000),
+        )
+    ],
 }
 
 
@@ -61,6 +81,7 @@ def run_bench(name, rtl, workdir, parameters=None):
         str(out),
         *[f"-P{name}.{key}={value}" for key, value in (parameters or {}).items()],
         *[str(SRC / f) for f in rtl],
+        *[str(HERE / f) for f in SIM_MODELS.get(name, [])],
         str(HERE / f"{name}.sv"),
     ]
     built = subprocess.run(argv, capture_output=True, text=True)
@@ -86,6 +107,7 @@ def lint(rtl):
     if top == "pcileech_req_gate":
         argv += ["-GN_NP_MAX=36"]  # test fixture only; production must bind its plan
     argv += [str(SRC / f) for f in rtl]
+    argv += [str(HERE / f) for f in LINT_STUBS.get(top, [])]
     res = subprocess.run(argv, capture_output=True, text=True)
     return res.returncode == 0, res.stdout + res.stderr
 
@@ -99,14 +121,11 @@ def main(selected):
     jobs = 0
     with tempfile.TemporaryDirectory() as tmp:
         for name in names:
-            cases = (
-                [{"CAP": cap} for cap in (3, 36, 256)]
-                if name == "tb_req_gate"
-                else [{}]
-            )
-            for parameters in cases:
+            for parameters in CASES.get(name, [{}]):
                 jobs += 1
-                label = name + (f" CAP={parameters['CAP']}" if parameters else "")
+                label = " ".join(
+                    [name, *(f"{key}={value}" for key, value in parameters.items())]
+                )
                 ok, text = run_bench(name, BENCHES[name], Path(tmp), parameters)
                 lint_ok, lint_text = lint(BENCHES[name])
                 status = "PASS" if ok and lint_ok else "FAIL"

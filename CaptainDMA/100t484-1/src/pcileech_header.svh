@@ -277,15 +277,17 @@ interface IfPCIeFifoCore;
     wire                drp_we;
     wire    [8:0]       drp_addr;
     wire    [15:0]      drp_di;
+    // R1 requester status block, clk_sys (pcileech_req_status layout)
+    wire    [511:0]     req_status;
     
     modport mp_fifo (
-        input drp_rdy, drp_do,
+        input drp_rdy, drp_do, req_status,
         output pcie_rst_core, pcie_rst_subsys, drp_en, drp_we, drp_addr, drp_di
     );
 
     modport mp_pcie (
         input pcie_rst_core, pcie_rst_subsys, drp_en, drp_we, drp_addr, drp_di,
-        output drp_rdy, drp_do
+        output drp_rdy, drp_do, req_status
     );
 endinterface
 
