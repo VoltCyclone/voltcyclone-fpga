@@ -133,6 +133,7 @@ def main() -> int:
                     and not a.startswith("-GREQ_N_NP_MAX") and not a.startswith("-GDRP_")]
             subprocess.run(
                 ["verilator", "--json-only", "--json-only-output", str(dump), "-Wno-fatal",
+                 "--Mdir", str(Path(tmp) / f"obj-{hz}"),
                  "--top-module", "a7_elab_top", f"-GREQ_CLK_PCIE_HZ=64'd{hz}", *elab],
                 capture_output=True, text=True)
             values = table_clock(json.loads(dump.read_text())) if dump.exists() else []
