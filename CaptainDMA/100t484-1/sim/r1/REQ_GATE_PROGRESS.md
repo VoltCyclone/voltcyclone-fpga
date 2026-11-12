@@ -143,3 +143,34 @@ DRP startup checkpoint, 2026-11-11 (uncommitted):
   rst_pcie_n <= cnt_done && !rst_pcie_src && drp_ok in pcileech_pcie_a7_rst,
   instancing between dfifo_pcie.drp_* and the core, plan values from the
   generator, and adding the DRP status to the RO map.
+
+Board integration checkpoint, 2026-11-12:
+- pcileech_pcie_a7: merged TX (tlps_tx) -> req_gate_axis -> tlps_tx_gated -> dst64;
+  req_tx_obs on the core-facing tlp_tx with ctx.tx_err_drop; src64 ->
+  tlps_rx_core -> req_rx_cpl -> tlps_rx -> pcileech_pcie_tlp_a7 (all three RX
+  consumers; rx_cpl passes non-completions). Tracker reset rst_req =
+  rst_clkpcie || rst_pcie_user (link session abort, same as dst64).
+  live_rid = {bus, dev, fn} from ctx (not pcie_id). Core cfg_trn_pending now
+  from the table (contract O12); cfg_a7 rw[215] no longer drives it.
+- Errors: count only (user decision 2026-11-11). req_err runs with
+  aer_enabled=0, cfg_err_* outputs unconnected, core cfg_err_* stay tied off
+  (core built without error reporting/AER).
+- DRP: pcileech_pcie_drp_startup sits between dfifo_pcie.drp_* and the core;
+  rst_pcie_n <= stretch_done && !rst_pcie_src && drp_ok. Status at
+  pcileech_fifo ro +0x068..+0x06F via new IfPCIeFifoCore.drp_status (SIZEOF
+  now 0x70). dfifo_pcie.req_status driven by pcileech_req_status.
+- cfgspace_shadow config completions now carry tuser = first|last; before,
+  tuser was 0 and the gate would have refused every config completion as an
+  orphan. BAR read engine and static/host sources already set tuser[0].
+- Plan values (REQ_N_NP_MAX, DRP_PLAN_*, DRP_RDY_TIMEOUT_CYCLES) are top-level
+  parameters with fatal defaults, passed to pcie_a7; the project TCL adds the
+  R1 sources and sources the generated requester_plan.tcl if present
+  (user decision: required top params via TCL). Synthesis fails until the
+  generator emits it.
+- lint_pcie_a7.py: Verilator lint of the integrated module against port-only
+  stubs (core ports from instance comments). PASS; a width-fault control is
+  caught. run_r1 16/16, run_gate_axis tx_path pass.
+- Not done: generator RequesterTrackingPlan/emitter writing requester_plan.tcl,
+  N_NP_MAX from advertised NP credits, Vivado elaboration/synthesis/timing
+  (remote Vivado MCP currently errors), XDC timing exceptions for
+  pcileech_req_status (XPM handshake carries its own), hardware qualification.

@@ -209,7 +209,7 @@ module pcileech_fifo #(
     localparam          RWPOS_DRP_WR_EN             = 21;
     localparam          RWPOS_GLOBAL_SYSTEM_RESET   = 31;
     
-    wire    [831:0]     ro;
+    wire    [895:0]     ro;
     reg     [239:0]     rw;
     
     // special non-user accessible registers 
@@ -251,7 +251,12 @@ module pcileech_fifo #(
     assign ro[319:288]  = PARAM_CUSTOM_VALUE;           // +024: CUSTOM VALUE
     // PCIe REQUESTER STATUS (R1): coherent clk_pcie snapshot, layout in pcileech_req_status.sv
     assign ro[831:320]  = dpcie.req_status;             // +028: MAGIC/VERSION 0x5201 .. +067
-    // +068
+    // PCIe DRP STARTUP (R1): reset-held DRP plan status
+    assign ro[847:832]  = dpcie.drp_status[15:0];       // +068: [0] drp_ok, [1] failed, [3:2] reason (1 rdy timeout, 2 base, 3 verify)
+    assign ro[863:848]  = dpcie.drp_status[31:16];      // +06A: [7:0] failed attempts, [15:8] host plan-address writes refused (saturating)
+    assign ro[879:864]  = dpcie.drp_status[47:32];      // +06C: word read at the start of the last attempt
+    assign ro[895:880]  = dpcie.drp_status[63:48];      // +06E: word read back by the last attempt
+    // +070
     
     // ------------------------------------------------------------------------
     // INITIALIZATION/RESET BLOCK _AND_

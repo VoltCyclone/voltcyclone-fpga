@@ -14,7 +14,16 @@ module pcileech_100t484_x1_top #(
     parameter       PARAM_DEVICE_ID = 9,
     parameter       PARAM_VERSION_NUMBER_MAJOR = 4,
     parameter       PARAM_VERSION_NUMBER_MINOR = 14,
-    parameter       PARAM_CUSTOM_VALUE = 32'hffffffff
+    parameter       PARAM_CUSTOM_VALUE = 32'hffffffff,
+    // R1 requester-tracking plan: no usable defaults. Bound as generics by the
+    // generated requester_plan.tcl; elaboration fails without it.
+    parameter integer REQ_N_NP_MAX            = 0,
+    parameter integer DRP_PLAN_BOUND          = 0,
+    parameter [8:0]   DRP_PLAN_ADDR           = 9'h019,
+    parameter [15:0]  DRP_PLAN_MASK           = 16'h0000,
+    parameter [15:0]  DRP_PLAN_VALUE          = 16'h0000,
+    parameter [15:0]  DRP_PLAN_BASE_EXPECT    = 16'h0000,
+    parameter integer DRP_RDY_TIMEOUT_CYCLES  = 0
 ) (
     // SYS
     input           clk,
@@ -194,7 +203,15 @@ module pcileech_100t484_x1_top #(
     // PCIe
     // ----------------------------------------------------
     
-    pcileech_pcie_a7 i_pcileech_pcie_a7(
+    pcileech_pcie_a7 #(
+        .REQ_N_NP_MAX           ( REQ_N_NP_MAX          ),
+        .DRP_PLAN_BOUND         ( DRP_PLAN_BOUND        ),
+        .DRP_PLAN_ADDR          ( DRP_PLAN_ADDR         ),
+        .DRP_PLAN_MASK          ( DRP_PLAN_MASK         ),
+        .DRP_PLAN_VALUE         ( DRP_PLAN_VALUE        ),
+        .DRP_PLAN_BASE_EXPECT   ( DRP_PLAN_BASE_EXPECT  ),
+        .DRP_RDY_TIMEOUT_CYCLES ( DRP_RDY_TIMEOUT_CYCLES )
+    ) i_pcileech_pcie_a7(
         .clk_sys            ( clk                   ),
         .rst                ( rst                   ),
         // PCIe fabric

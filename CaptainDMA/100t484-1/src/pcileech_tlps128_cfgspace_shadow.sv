@@ -189,7 +189,10 @@ module pcileech_cfgspace_pcie_tx(
     
     assign tlps_cfg_rsp.tkeepdw = (tx_tp ? 4'b1111 : 4'b0111);
     assign tlps_cfg_rsp.tlast = 1;
-    assign tlps_cfg_rsp.tuser = 0;
+    // Every config completion is one beat: mark it first ([0]) and last ([1]),
+    // as IfAXIS128 requires. The requester gate on the merged TX stream finds
+    // packet starts by tuser[0] and refuses an unmarked beat as an orphan.
+    assign tlps_cfg_rsp.tuser = 9'b0_0000_0011;
     assign tlps_cfg_rsp.has_data = ~tx_empty;    
 endmodule
 

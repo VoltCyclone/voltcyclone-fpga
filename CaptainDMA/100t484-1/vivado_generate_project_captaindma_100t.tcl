@@ -116,6 +116,18 @@ set files [list \
  [file normalize "${origin_dir}/src/pcileech_pcie_tlp_a7.sv"]\
  [file normalize "${origin_dir}/src/pcileech_tlps128_bar_controller.sv"]\
  [file normalize "${origin_dir}/src/pcileech_tlps128_cfgspace_shadow.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_defs.svh"]\
+ [file normalize "${origin_dir}/src/pcileech_req_classify.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_tagalloc.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_cto_limits.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_gate.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_gate_axis.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_table.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_tx_obs.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_rx_cpl.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_err.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_status.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_pcie_drp_startup.sv"]\
  [file normalize "${origin_dir}/src/pcileech_100t484_x1_top.sv"]\
 ]
 set imported_files [import_files -fileset sources_1 $files]
@@ -168,11 +180,71 @@ set file "src/pcileech_100t484_x1_top.sv"
 set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
 
+# R1 requester tracking
+set file "src/pcileech_req_defs.svh"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "Verilog Header" -objects $file_obj
+
+set file "src/pcileech_req_classify.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_tagalloc.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_cto_limits.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_gate.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_gate_axis.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_table.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_tx_obs.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_rx_cpl.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_err.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_status.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_pcie_drp_startup.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]
 set_property -name "top" -value "pcileech_100t484_x1_top" -objects $obj
 set_property -name "top_auto_set" -value "0" -objects $obj
+
+# R1 requester-tracking plan. The generator writes requester_plan.tcl next to
+# this script; it sets the top-level generics (REQ_N_NP_MAX, DRP_PLAN_*,
+# DRP_RDY_TIMEOUT_CYCLES) on sources_1. Without it the top's plan parameters
+# keep their fatal defaults and elaboration stops, by design.
+set requester_plan [file normalize "${origin_dir}/requester_plan.tcl"]
+if {[file exists $requester_plan]} {
+  source $requester_plan
+} else {
+  puts "WARNING: $requester_plan not found; synthesis will fail until the requester plan is generated."
+}
 
 
 # Set 'sources_1' fileset object
