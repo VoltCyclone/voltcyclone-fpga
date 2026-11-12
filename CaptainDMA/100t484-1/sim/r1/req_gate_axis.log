@@ -1,9 +1,0 @@
-[PASS] IfAXIS128 adapter lint and scoreboard
-R1_TB_PASS tb_req_gate checks=25895 CAP=36
-- /private/tmp/pcileech-completion/upstream/CaptainDMA/100t484-1/sim/r1/tb_req_gate.sv:389: Verilog $finish
-- S i m u l a t i o n   R e p o r t: Verilator 5.037 devel
-- Verilator: $finish at 232us; walltime 0.033 s; speed 7.022 ms/s
-- Verilator: cpu 0.033 s on 1 threads; alloced 0 MB
-[PASS] rejected N_NP_MAX=-1
-[PASS] rejected N_NP_MAX=0
-[PASS] rejected N_NP_MAX=257
