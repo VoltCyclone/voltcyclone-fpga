@@ -14,7 +14,6 @@
 // receiving module fails elaboration until the generated plan binds them
 // (RequesterTrackingPlan, passed down from the top as generics).
 module pcileech_pcie_a7 #(
-    parameter integer       REQ_N_NP_MAX            = 0,        // gate: NP admission cap, 1..256
     parameter longint       REQ_CLK_PCIE_HZ         = 0,        // core user clock (exact-core readback)
     parameter integer       DRP_PLAN_BOUND          = 0,        // must be 1
     parameter [8:0]         DRP_PLAN_ADDR           = 9'h019,
@@ -243,9 +242,14 @@ module pcileech_pcie_a7 #(
     wire [15:0]  req_err_reported_count, req_err_suppressed_count, req_err_overflow_count;
     wire         req_err_overflow;
 
-    pcileech_req_gate_axis #(
-        .N_NP_MAX                   ( REQ_N_NP_MAX              )
-    ) i_pcileech_req_gate_axis (
+    wire [7:0] req_fc_nph;
+    wire [8:0] req_np_cap;
+    pcileech_req_np_cap i_pcileech_req_np_cap (
+        .clk(clk_pcie), .rst(rst_req), .link_up(user_lnk_up),
+        .fc_nph(req_fc_nph), .np_cap(req_np_cap)
+    );
+    pcileech_req_gate_axis i_pcileech_req_gate_axis (
+        .np_cap                     ( req_np_cap                ),
         .clk                        ( clk_pcie                  ),
         .rst                        ( rst_req                   ),
         .tlps_in                    ( tlps_tx.sink              ),
@@ -521,8 +525,9 @@ module pcileech_pcie_a7 #(
 
         // Unused inputs tied inactive. Left unconnected, the IP's driverless
         // nets fail opt_design (Opt31-67) under Vivado 2026.1.
-        // flow control: select 3'b000; fc_* outputs are unused.
-        .fc_sel                     ( 3'b000                    ),  // <- [2:0]
+        // Transmit NP credit limit: sampled once before NP admission.
+        .fc_nph                     ( req_fc_nph                ),  // -> [7:0]
+        .fc_sel                     ( 3'b101                    ),  // <- [2:0]
         // error reporting: no user-reported errors. These are active-high
         // requests; header/log values are sampled only with a request.
         .cfg_err_ecrc               ( 1'b0                      ),  // <-

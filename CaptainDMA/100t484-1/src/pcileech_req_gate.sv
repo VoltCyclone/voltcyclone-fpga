@@ -1,8 +1,12 @@
 // R1 requester tracking: pull-stream admission gate.
 `timescale 1ns / 1ps
 `include "pcileech_req_defs.svh"
-module pcileech_req_gate #(parameter integer N_NP_MAX = 0) (
+module pcileech_req_gate (
     input clk, rst,
+    // In-flight non-posted cap from pcileech_req_np_cap (live advertised NP
+    // credit, contract section 8). 0 = not yet sampled: every NP request is
+    // refused with REFUSE_NP_CAP.
+    input [8:0] np_cap,
     input [15:0] live_rid,
     input bme,
     input [2:0] mrrs_code,
@@ -29,13 +33,6 @@ module pcileech_req_gate #(parameter integer N_NP_MAX = 0) (
     output reg [15:0] admitted_count,
     output [111:0] refuse_counts
 );
-    // Bind this from the generated tracking plan, using the advertised NP
-    // credit bound (contract sections 3/8). Zero intentionally fails closed.
-    initial begin
-        if (N_NP_MAX < 1 || N_NP_MAX > 256)
-            $fatal(1, "req_gate requires N_NP_MAX in 1..256 from the tracking plan");
-    end
-
     // Classify at input arrival: downstream stalls must not change a decision
     // or cause a second admission. The merged arbiter keeps packets contiguous.
     reg in_packet, drop_packet;
@@ -62,7 +59,7 @@ module pcileech_req_gate #(parameter integer N_NP_MAX = 0) (
             refuse_reason = reason;
         else if (cls == `REQ_CLS_TRACK) begin
             if (!tag_avail) refuse_reason = `REQ_REFUSE_NO_TAG;
-            else if (n_np >= 10'(N_NP_MAX)) refuse_reason = `REQ_REFUSE_NP_CAP;
+            else if ((n_np < {1'b0, np_cap}) !== 1'b1) refuse_reason = `REQ_REFUSE_NP_CAP;
         end
     end
     wire refuse = start_packet && (refuse_reason != `REQ_REFUSE_NONE);

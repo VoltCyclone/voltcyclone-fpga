@@ -14,7 +14,7 @@ module tb_req_gate_counters;
     wire [15:0] admitted_count;
     wire [111:0] refuse_counts;
     integer left=0, received=0, admitted=0, checks=0;
-    pcileech_req_gate #(.N_NP_MAX(3)) dut (
+    pcileech_req_gate dut (.np_cap(9'd3),
         .clk(clk),.rst(rst),.live_rid(16'h0218),.bme(bme),.mrrs_code(3'd0),
         .ext_tag_en(1'b1),.free(free),.n_reserved(n_reserved),.n_issued(n_issued),
         .in_data(hdr),.in_keep(4'h7),.in_user(9'd3),.in_last(1'b1),

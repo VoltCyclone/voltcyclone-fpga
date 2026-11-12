@@ -2,7 +2,7 @@
 """Run the gate and requester TX path with their real SystemVerilog interfaces.
 
 The ordinary R1 runner uses Icarus (which cannot elaborate these modports).
-This command also lints the adapter with -Wall and tests invalid NP-cap guards.
+This command also lints the adapter with -Wall and checks runtime NP-cap refusals.
 All generated binaries live in a temporary directory.
 """
 import subprocess
@@ -31,7 +31,6 @@ def main():
             "-Wall",
             "--top-module",
             "pcileech_req_gate_axis",
-            "-GN_NP_MAX=36",
             "-I" + str(SRC),
             adapter,
             *sources,
@@ -60,38 +59,6 @@ def main():
             raise RuntimeError(log)
         print("[PASS] IfAXIS128 adapter lint and scoreboard")
         print(log.rstrip())
-        for cap in (-1, 0, 257):
-            bench = work / "tb_bad_cap.sv"
-            bench.write_text(
-                f"module tb_bad_cap; pcileech_req_gate #(.N_NP_MAX({cap})) dut(); "
-                "initial #1 $finish; endmodule\n"
-            )
-            out = work / "bad.vvp"
-            run(
-                [
-                    "iverilog",
-                    "-g2012",
-                    "-I",
-                    str(SRC),
-                    "-s",
-                    "tb_bad_cap",
-                    "-o",
-                    str(out),
-                    *sources[:3],
-                    str(bench),
-                ]
-            )
-            result = subprocess.run(
-                ["vvp", "-n", str(out)], capture_output=True, text=True, timeout=10
-            )
-            if (
-                result.returncode == 0
-                or "requires N_NP_MAX in 1..256" not in result.stdout
-            ):
-                raise RuntimeError(
-                    f"invalid cap {cap} was not rejected: {result.stdout}{result.stderr}"
-                )
-            print(f"[PASS] rejected N_NP_MAX={cap}")
 
         tx_obj = work / "tx_obj"
         run(

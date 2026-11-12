@@ -5,8 +5,9 @@
 `include "pcileech_header.svh"
 /* verilator lint_on DECLFILENAME */
 
-module pcileech_req_gate_axis #(parameter integer N_NP_MAX = 0) (
+module pcileech_req_gate_axis (
     input clk, rst,
+    input [8:0] np_cap,
     IfAXIS128.sink tlps_in,
     IfAXIS128.source tlps_out,
     input [15:0] live_rid,
@@ -24,8 +25,8 @@ module pcileech_req_gate_axis #(parameter integer N_NP_MAX = 0) (
     output [15:0] admitted_count,
     output [111:0] refuse_counts
 );
-    pcileech_req_gate #(.N_NP_MAX(N_NP_MAX)) i_gate (
-        .clk(clk), .rst(rst), .live_rid(live_rid), .bme(bme),
+    pcileech_req_gate i_gate (
+        .clk(clk), .rst(rst), .np_cap(np_cap), .live_rid(live_rid), .bme(bme),
         .mrrs_code(mrrs_code), .ext_tag_en(ext_tag_en),
         .free(free), .n_reserved(n_reserved), .n_issued(n_issued),
         .in_data(tlps_in.tdata), .in_keep(tlps_in.tkeepdw), .in_user(tlps_in.tuser),

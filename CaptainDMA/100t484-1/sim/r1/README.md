@@ -16,6 +16,7 @@ export LC_ALL=C PYTHONDONTWRITEBYTECODE=1 PATH=/usr/local/oss-cad-suite/bin:$PAT
 python3 run_r1.py          # all unit benches (Icarus) + Verilator -Wall lint
 python3 run_gate_axis.py   # gate/TX path/RX reset through the real interfaces
 python3 lint_pcie_a7.py    # lint + clock-binding checks of integrated pcileech_pcie_a7
+python3 mut_np_cap.py      # runtime credit sampler
 python3 mut_gate.py        # mutation campaigns: each must report killed == total
 python3 mut_rx.py
 python3 mut_err.py
@@ -37,7 +38,7 @@ Mutation scripts edit temporary copies only; the working RTL is never changed.
 ## Production parameters
 
 The board top deliberately has no usable defaults for the requester and DRP plan
-parameters (`REQ_N_NP_MAX`, `REQ_CLK_PCIE_HZ`, `DRP_PLAN_*`,
+parameters (`REQ_CLK_PCIE_HZ`, `DRP_PLAN_*`,
 `DRP_RDY_TIMEOUT_CYCLES`): elaboration stops until they are bound. The project
 script sources `requester_plan.tcl`, which the generator emits from donor and
 IP configuration. Values in these benches are test fixtures only.
@@ -49,3 +50,10 @@ IP configuration. Values in these benches are test fixtures only.
 
 These tests establish RTL behaviour and lint only. They are not vendor-core
 elaboration, synthesis, timing or hardware qualification.
+
+The NP cap is runtime state: `pcileech_req_np_cap` samples the link partner's
+initial NP-header credit once per link session (`fc_sel=101`), after the
+documented two-clock selector latency. `tb_req_np_cap` covers all 256 credit
+values, X/Z samples, session boundaries and no cumulative-count resampling;
+`mut_np_cap.py` rejects 11 sampling/arithmetic faults. `cfg_fc_if` must be enabled
+and the vendor core regenerated. Port-only stubs cannot verify that interface.

@@ -238,7 +238,7 @@
         "cfg_ctl_if": [ { "value": "true", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "cfg_status_if": [ { "value": "true", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "rcv_msg_if": [ { "value": "false", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
-        "cfg_fc_if": [ { "value": "false", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
+        "cfg_fc_if": [ { "value": "true", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "err_reporting_if": [ { "value": "false", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "USE_BOARD_FLOW": [ { "value": "false", "resolve_type": "user", "format": "bool", "usage": "all" } ],
         "RESET_BOARD_INTERFACE": [ { "value": "Custom", "resolve_type": "user", "usage": "all" } ],

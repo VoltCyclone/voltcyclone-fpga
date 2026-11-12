@@ -39,7 +39,7 @@ module tb_req_tx_path;
     IfAXIS128 restored_tlps();
     IfAXIS128 host_tlps();
 
-    pcileech_req_gate_axis #(.N_NP_MAX(3)) gate_dut (
+    pcileech_req_gate_axis gate_dut (.np_cap(9'd3),
         .clk(clk), .rst(rst), .tlps_in(input_tlps), .tlps_out(gated_tlps),
         .live_rid(16'h0218), .bme(1'b1), .mrrs_code(3'd0), .ext_tag_en(1'b0),
         .free(free), .n_reserved(n_reserved), .n_issued(n_issued),

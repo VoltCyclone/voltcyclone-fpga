@@ -16,6 +16,7 @@ from run_r1 import BENCHES, HERE, SRC
 GATE = "pcileech_req_gate.sv"
 # name, old text, replacement, bench, CAP (for the stream bench).
 MUTANTS = [
+    ("unknown cap admits", "(n_np < {1'b0, np_cap}) !== 1'b1", "n_np >= {1'b0, np_cap}", "tb_req_gate", 36),
     (
         "ignore_class",
         "else if (cls == `REQ_CLS_REFUSE)",
@@ -25,18 +26,18 @@ MUTANTS = [
     ),
     ("pass_orphan_tail", "if (!in_user[0])", "if (1'b0)", "tb_req_gate", 36),
     ("ignore_no_tag", "if (!tag_avail)", "if (1'b0)", "tb_req_gate", 36),
-    ("omit_np_cap", "n_np >= 10'(N_NP_MAX)", "1'b0", "tb_req_gate", 36),
+    ("omit_np_cap", "(n_np < {1'b0, np_cap}) !== 1'b1", "1'b0", "tb_req_gate", 36),
     (
         "cap_from_tag_width",
-        "n_np >= 10'(N_NP_MAX)",
+        "(n_np < {1'b0, np_cap}) !== 1'b1",
         "n_np >= 10'd256",
         "tb_req_gate",
         36,
     ),
     (
         "cap_off_by_one",
-        "n_np >= 10'(N_NP_MAX)",
-        "n_np > 10'(N_NP_MAX)",
+        "(n_np < {1'b0, np_cap}) !== 1'b1",
+        "(n_np <= {1'b0, np_cap}) !== 1'b1",
         "tb_req_gate",
         3,
     ),

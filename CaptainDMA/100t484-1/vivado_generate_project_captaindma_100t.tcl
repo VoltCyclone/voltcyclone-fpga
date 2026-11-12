@@ -120,6 +120,7 @@ set files [list \
  [file normalize "${origin_dir}/src/pcileech_req_classify.sv"]\
  [file normalize "${origin_dir}/src/pcileech_req_tagalloc.sv"]\
  [file normalize "${origin_dir}/src/pcileech_req_cto_limits.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_np_cap.sv"]\
  [file normalize "${origin_dir}/src/pcileech_req_gate.sv"]\
  [file normalize "${origin_dir}/src/pcileech_req_gate_axis.sv"]\
  [file normalize "${origin_dir}/src/pcileech_req_table.sv"]\
@@ -236,7 +237,7 @@ set_property -name "top" -value "pcileech_100t484_x1_top" -objects $obj
 set_property -name "top_auto_set" -value "0" -objects $obj
 
 # R1 requester-tracking plan. The generator writes requester_plan.tcl next to
-# this script; it sets the top-level generics (REQ_N_NP_MAX, REQ_CLK_PCIE_HZ, DRP_PLAN_*,
+# this script; it sets the top-level generics (REQ_CLK_PCIE_HZ, DRP_PLAN_*,
 # DRP_RDY_TIMEOUT_CYCLES) on sources_1. Without it the top's plan parameters
 # keep their fatal defaults and elaboration stops, by design.
 set requester_plan [file normalize "${origin_dir}/requester_plan.tcl"]

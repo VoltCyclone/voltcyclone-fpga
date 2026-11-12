@@ -14,6 +14,7 @@ module tb_req_gate;
     reg clk = 0, rst = 1;
     always #5 clk = ~clk;
     reg [15:0] live_rid = 16'h0218;
+    reg [8:0] np_cap = 9'(CAP);
     reg bme = 1, ext_tag_en = 0;
     reg [2:0] mrrs_code = 0;
     reg [127:0] in_data = 0;
@@ -64,10 +65,10 @@ module tb_req_gate;
     assign out_valid = axis_out.tvalid;
     assign out_has_data = axis_out.has_data;
     assign axis_out.tready = out_ready;
-    pcileech_req_gate_axis #(.N_NP_MAX(CAP)) dut (
+    pcileech_req_gate_axis dut (.np_cap(np_cap),
         .tlps_in(axis_in), .tlps_out(axis_out),
 `else
-    pcileech_req_gate #(.N_NP_MAX(CAP)) dut (
+    pcileech_req_gate dut (.np_cap(np_cap),
         .in_data(in_data), .in_keep(in_keep), .in_user(in_user), .in_last(in_last),
         .in_valid(in_valid), .in_ready(in_ready),
         .out_data(out_data), .out_keep(out_keep), .out_user(out_user), .out_last(out_last),
@@ -261,6 +262,13 @@ module tb_req_gate;
     integer i, limit;
     reg [127:0] d;
     initial begin
+        reset_all;
+        // Runtime cap zero closes NP admission but posted traffic still drains.
+        np_cap = 9'bxxxxxxxxx;
+        refused(mrd(8'hfe),1,1,7);
+        np_cap = 0;
+        refused(mrd(8'hff),1,1,7);
+        np_cap = 9'(CAP);
         reset_all;
         // PASS multi-beat write, all completion forms, and posted messages.
         sink_mode = 1; source_gaps = 1;
