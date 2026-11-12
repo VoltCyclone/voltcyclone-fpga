@@ -23,6 +23,7 @@ module pcileech_100t484_x1_top #(
     parameter [8:0]   DRP_PLAN_ADDR           = 9'h019,
     parameter [15:0]  DRP_PLAN_MASK           = 16'h0000,
     parameter [15:0]  DRP_PLAN_VALUE          = 16'h0000,
+    parameter [15:0]  DRP_PLAN_CHECK_MASK     = 16'h0000,
     parameter [15:0]  DRP_PLAN_BASE_EXPECT    = 16'h0000,
     parameter integer DRP_RDY_TIMEOUT_CYCLES  = 0
 ) (
@@ -211,6 +212,7 @@ module pcileech_100t484_x1_top #(
         .DRP_PLAN_ADDR          ( DRP_PLAN_ADDR         ),
         .DRP_PLAN_MASK          ( DRP_PLAN_MASK         ),
         .DRP_PLAN_VALUE         ( DRP_PLAN_VALUE        ),
+        .DRP_PLAN_CHECK_MASK    ( DRP_PLAN_CHECK_MASK   ),
         .DRP_PLAN_BASE_EXPECT   ( DRP_PLAN_BASE_EXPECT  ),
         .DRP_RDY_TIMEOUT_CYCLES ( DRP_RDY_TIMEOUT_CYCLES )
     ) i_pcileech_pcie_a7(

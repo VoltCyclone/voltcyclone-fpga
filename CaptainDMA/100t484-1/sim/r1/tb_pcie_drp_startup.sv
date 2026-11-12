@@ -3,6 +3,10 @@
 // drp_en, no new request before drp_rdy) and keeps a 512-word register file.
 `timescale 1ns / 1ps
 module tb_pcie_drp_startup;
+    // Bits outside the plan mask that startup compares with the expected base.
+    // 65295 = 16'hff0f checks every non-plan bit; 3840 = 16'h0f00 checks one
+    // field only (like the board's Completion Timeout Ranges field).
+    parameter integer CHECK = 65295;
     localparam [8:0]  ADDR  = 9'h019;
     localparam [15:0] MASK  = 16'h00f0;
     localparam [15:0] VALUE = 16'h0050;
@@ -29,7 +33,8 @@ module tb_pcie_drp_startup;
 
     pcileech_pcie_drp_startup #(
         .PLAN_BOUND(1), .PLAN_ADDR(ADDR), .PLAN_MASK(MASK), .PLAN_VALUE(VALUE),
-        .PLAN_BASE_EXPECT(BASE), .RDY_TIMEOUT_CYCLES(TIMEOUT)
+        .PLAN_CHECK_MASK(16'(CHECK)), .PLAN_BASE_EXPECT(BASE & 16'(CHECK)),
+        .RDY_TIMEOUT_CYCLES(TIMEOUT)
     ) dut (
         .clk(clk), .rst_src(rst_src), .drp_ok(drp_ok),
         .host_en(host_en), .host_we(host_we), .host_addr(host_addr), .host_di(host_di),
@@ -322,6 +327,16 @@ module tb_pcie_drp_startup;
         wait_done(took);
         check_that(drp_ok && regs[ADDR] == PLANNED, "startup runs after host transaction");
         max_lat = 6;
+        // 14. Bits outside the check mask: refused when checked, tolerated and
+        //     preserved when not (field-only check, contract section 11).
+        regs[ADDR] = IP_DEFAULT ^ 16'h1001;     // bits 12 and 0, outside MASK
+        reset_pulse(2);
+        wait_done(took);
+        if (CHECK == 65295)
+            check_that(!drp_ok && failed && fail_reason == 2'd2, "full check refuses other bits");
+        else
+            check_that(drp_ok && !failed && regs[ADDR] == (((IP_DEFAULT ^ 16'h1001) & ~MASK) | VALUE),
+                       "unchecked bits tolerated and preserved");
         // 10. Saturating failure count.
         regs[ADDR] = 16'h0000;
         for (i = 0; i < 260; i = i + 1) begin

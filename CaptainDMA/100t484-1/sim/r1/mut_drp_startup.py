@@ -15,7 +15,9 @@ MUTANTS = [
     ("drp_ok survives reset source", "            drp_ok <= 1'b0;\n            need_run <= 1'b1;", "            need_run <= 1'b1;"),
     ("no re-run per reset", "            drp_ok <= 1'b0;\n            need_run <= 1'b1;", "            drp_ok <= 1'b0;"),
     ("runs while reset source held", "wire start = state == S_IDLE && need_run && !rst_src;", "wire start = state == S_IDLE && need_run;"),
-    ("no base check", "else if ((drp_do & ~PLAN_MASK) != PLAN_BASE_EXPECT) finish_fail(R_BASE);", "else if (1'b0) finish_fail(R_BASE);"),
+    ("no base check", "else if ((drp_do & PLAN_CHECK_MASK) != PLAN_BASE_EXPECT) finish_fail(R_BASE);", "else if (1'b0) finish_fail(R_BASE);"),
+    ("check every non-plan bit", "else if ((drp_do & PLAN_CHECK_MASK) != PLAN_BASE_EXPECT) finish_fail(R_BASE);",
+     "else if ((drp_do & ~PLAN_MASK) != PLAN_BASE_EXPECT) finish_fail(R_BASE);"),
     ("no verify compare", "else if (drp_do != write_word) finish_fail(R_VERIFY);", "else if (1'b0) finish_fail(R_VERIFY);"),
     ("verify only planned bits", "else if (drp_do != write_word) finish_fail(R_VERIFY);", "else if ((drp_do & PLAN_MASK) != PLAN_VALUE) finish_fail(R_VERIFY);"),
     ("no read timeout", "                end else if (timed_out) finish_fail(R_TIMEOUT);\n            S_WRITE:", "                end\n            S_WRITE:"),
@@ -55,14 +57,26 @@ def main() -> int:
         run_r1.SRC = scratch_dir
         source = scratch_dir / rtl[0]
         source.write_text(original)
-        passed, log = run_r1.run_bench(bench, rtl, scratch_dir)
+        cases = run_r1.CASES.get(bench, [{}])
+
+        def run_cases():
+            """True only if every parameter case passes; returns the logs."""
+            logs = []
+            ok = True
+            for parameters in cases:
+                passed, log = run_r1.run_bench(bench, rtl, scratch_dir, parameters)
+                ok = ok and passed
+                logs.append(log)
+            return ok, "\n".join(logs)
+
+        passed, log = run_cases()
         if not passed:
             raise RuntimeError("drp startup positive control failed\n" + log)
         for label, before, after in MUTANTS:
             if original.count(before) != 1:
                 raise RuntimeError("stale or ambiguous mutation anchor " + label)
             source.write_text(original.replace(before, after))
-            passed, log = run_r1.run_bench(bench, rtl, scratch_dir)
+            passed, log = run_cases()
             killed_by = [m for m in ("R1_TB_FAIL",) if m in log]
             if passed or not killed_by:
                 raise RuntimeError(

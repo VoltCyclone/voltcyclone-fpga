@@ -77,6 +77,7 @@ def stubs() -> str:
         "    IfShadow2Fifo dshadow2fifo();\n"
         "    pcileech_pcie_a7 #(.REQ_N_NP_MAX(36), .REQ_CLK_PCIE_HZ(REQ_CLK_PCIE_HZ),\n"
         "        .DRP_PLAN_BOUND(1), .DRP_PLAN_MASK(16'h00f0), .DRP_PLAN_VALUE(16'h0050),\n"
+        "        .DRP_PLAN_CHECK_MASK(16'h0f00), .DRP_PLAN_BASE_EXPECT(16'h0200),\n"
         "        .DRP_RDY_TIMEOUT_CYCLES(64)) dut(.*);\n"
         "endmodule\n"
     )
@@ -115,7 +116,8 @@ def main() -> int:
         base = [
             "--top-module", "pcileech_pcie_a7", "-I" + str(SRC),
             "-GREQ_N_NP_MAX=36", "-GDRP_PLAN_BOUND=1", "-GDRP_PLAN_MASK=16'h00f0",
-            "-GDRP_PLAN_VALUE=16'h0050", "-GDRP_RDY_TIMEOUT_CYCLES=64",
+            "-GDRP_PLAN_VALUE=16'h0050", "-GDRP_PLAN_CHECK_MASK=16'h0f00",
+            "-GDRP_PLAN_BASE_EXPECT=16'h0200", "-GDRP_RDY_TIMEOUT_CYCLES=64",
             str(SRC / "pcileech_header.svh"), str(SRC / "pcileech_pcie_a7.sv"),
             *sorted(str(p) for p in SRC.glob("pcileech_req_*.sv")),
             str(SRC / "pcileech_pcie_drp_startup.sv"), str(stub),

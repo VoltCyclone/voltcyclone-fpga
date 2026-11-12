@@ -56,6 +56,7 @@ LINT_STUBS = {"pcileech_req_status": ["xpm_cdc_handshake_bbox.sv"]}
 # bench -> parameter sets; each set is a separate run.
 CASES = {
     "tb_req_gate": [{"CAP": cap} for cap in (3, 36, 256)],
+    "tb_pcie_drp_startup": [{"CHECK": 65295}, {"CHECK": 3840}],
     "tb_req_status": [
         {"PCIE_PS": pcie, "SYS_PS": sys_}
         for pcie, sys_ in (
@@ -110,6 +111,7 @@ def lint(rtl):
     if top == "pcileech_pcie_drp_startup":
         # test fixture only; production binds the tracking plan's DRP values
         argv += ["-GPLAN_BOUND=1", "-GPLAN_MASK=16'h00f0", "-GPLAN_VALUE=16'h0050",
+                 "-GPLAN_CHECK_MASK=16'h0f00", "-GPLAN_BASE_EXPECT=16'h0200",
                  "-GRDY_TIMEOUT_CYCLES=64"]
     argv += [str(SRC / f) for f in rtl]
     argv += [str(HERE / f) for f in LINT_STUBS.get(top, [])]

@@ -1,7 +1,7 @@
 // R1 reset-held DRP startup controller (contract section 11), clk_sys.
 //
 // While the PCIe core is held in reset (sys_rst_n low), read one DRP word,
-// check that the bits outside the plan mask match the generated core,
+// check that the generator-owned field bits (PLAN_CHECK_MASK) match the plan,
 // write the planned bits, read back and require the whole written word.
 // drp_ok gates rst_pcie_n; it clears on every reset-source assertion, so the
 // sequence re-runs in every core reset episode. A failure keeps drp_ok low
@@ -29,7 +29,8 @@ module pcileech_pcie_drp_startup #(
     parameter [8:0]     PLAN_ADDR           = 9'h019,
     parameter [15:0]    PLAN_MASK           = 16'h0000,
     parameter [15:0]    PLAN_VALUE          = 16'h0000,
-    parameter [15:0]    PLAN_BASE_EXPECT    = 16'h0000,
+    parameter [15:0]    PLAN_CHECK_MASK     = 16'h0000,  // bits compared before writing
+    parameter [15:0]    PLAN_BASE_EXPECT    = 16'h0000,  // expected value of those bits
     parameter integer   RDY_TIMEOUT_CYCLES  = 0
 ) (
     input               clk,
@@ -64,8 +65,12 @@ module pcileech_pcie_drp_startup #(
             $fatal(1, "drp_startup requires PLAN_BOUND=1 and plan values from the tracking plan");
         if (RDY_TIMEOUT_CYCLES < 16 || RDY_TIMEOUT_CYCLES > 65535)
             $fatal(1, "drp_startup RDY_TIMEOUT_CYCLES must be 16..65535");
-        if ((PLAN_VALUE & ~PLAN_MASK) != 16'h0000 || (PLAN_BASE_EXPECT & PLAN_MASK) != 16'h0000)
-            $fatal(1, "drp_startup PLAN_VALUE/PLAN_BASE_EXPECT overlap the wrong side of PLAN_MASK");
+        if ((PLAN_VALUE & ~PLAN_MASK) != 16'h0000)
+            $fatal(1, "drp_startup PLAN_VALUE has bits outside PLAN_MASK");
+        if (PLAN_CHECK_MASK == 16'h0000 || (PLAN_CHECK_MASK & PLAN_MASK) != 16'h0000)
+            $fatal(1, "drp_startup PLAN_CHECK_MASK must be nonzero and outside PLAN_MASK");
+        if ((PLAN_BASE_EXPECT & ~PLAN_CHECK_MASK) != 16'h0000)
+            $fatal(1, "drp_startup PLAN_BASE_EXPECT has bits outside PLAN_CHECK_MASK");
     end
     localparam [1:0] R_NONE = 2'd0, R_TIMEOUT = 2'd1, R_BASE = 2'd2, R_VERIFY = 2'd3;
 
@@ -169,7 +174,7 @@ module pcileech_pcie_drp_startup #(
                 if (drp_rdy) begin
                     read_word <= drp_do;
                     if (abort || rst_src) state <= S_IDLE;
-                    else if ((drp_do & ~PLAN_MASK) != PLAN_BASE_EXPECT) finish_fail(R_BASE);
+                    else if ((drp_do & PLAN_CHECK_MASK) != PLAN_BASE_EXPECT) finish_fail(R_BASE);
                     else if (drp_do == planned) begin
                         issue(1'b0, PLAN_ADDR, 16'd0);      // nothing to write: verify only
                         write_word <= planned;
