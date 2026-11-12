@@ -174,3 +174,37 @@ Board integration checkpoint, 2026-11-12:
   N_NP_MAX from advertised NP credits, Vivado elaboration/synthesis/timing
   (remote Vivado MCP currently errors), XDC timing exceptions for
   pcileech_req_status (XPM handshake carries its own), hardware qualification.
+
+Integration review fixes, 2026-11-12 (review: PCILeechFWGenerator
+docs/development/MSIX_REQUESTER_INTEGRATION_REVIEW.md):
+- F3 (822e1c1): host DRP transactions are bounded by RDY_TIMEOUT_CYCLES
+  (answered 0xFFFF, counted); every timeout is followed by a drain window that
+  absorbs a late rdy. Sticky any-failure bit and host-timeout count at
+  ro +0x068 [4] and [15:8]. 28/28 DRP mutants killed.
+- F2 (c06fdc3): required REQ_CLK_PCIE_HZ top/a7 generic into req_table;
+  elaboration-time $fatal unless 62.5/125/250 MHz. lint_pcie_a7.py checks the
+  value reaching i_pcileech_req_table at 62.5 and 125 MHz and that absent and
+  unsupported bindings are rejected.
+- F1: src64 moved from rst_subsys to rst_req, so the converter and req_rx_cpl
+  keep packet framing together and completions keep retiring entries through a
+  subsystem reset. The host filter now starts (reset and configuration) in its
+  drop-until-first state and only moves state on valid beats; before, an idle
+  cycle showing the previous header's tuser[0] could end the drop state and
+  pass an orphan tail. BAR controller and config shadow already act only on
+  first beats. tb_rx_subsys_reset (in run_gate_axis.py) sweeps a 1- and
+  4-cycle subsystem reset across every word of five TLPs (CplD 1/2 DW, MWr,
+  CplD 4 DW + ECRC digest, CplD): all entries retire, no orphan or nested
+  beats, delivered packets match the no-reset reference in order, clear
+  packets all arrive. The reviewed wiring fails it (control); resetting the
+  filter to pass and ungated filter state are both caught.
+  Dependency: a head whose tail the filter drops is flushed by dst_fifo
+  (rst_subsys_sys asserts in clk_sys no later than rst_subsys and blocks
+  writes during its reset window). The bench models that flush; the ordering
+  itself belongs to pcileech_pcie_a7_rst and its CDC tests (scratch copies
+  lost in the 2026-11-12 /tmp damage) and is not re-verified here.
+- The reviewer's evidence benches hard-code their own wiring (e.g.
+  tb_rx_reset puts the converter on rst||subsys), so they still "reproduce";
+  acceptance is the new tests above.
+- Open from the review: reconcile contract section 9 with the count-only
+  error decision; DRP_STARTUP_FAIL is now the sticky bit (+0x068[4]), with
+  [1] meaning "last attempt failed".

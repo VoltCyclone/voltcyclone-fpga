@@ -224,7 +224,11 @@ module pcileech_tlps128_filter(
     assign tlps_out.tuser   = tuser;
     assign tlps_out.tlast   = tlast;
     
-    bit  filter = 0;
+    // filter=1 drops beats until the next first beat. Reset and configuration
+    // start in that state: the RX converter upstream is on the link-session
+    // reset and keeps streaming through a subsystem reset, so the first beats
+    // seen after release can be the tail of a packet whose head was dropped.
+    bit  filter = 1;
     wire first = tlps_in.tuser[0];
     wire is_tlphdr_cpl = first && (
                         (tlps_in.tdata[31:25] == 7'b0000101) ||      // Cpl:  Fmt[2:0]=000b (3 DW header, no data), Cpl=0101xb
@@ -242,7 +246,9 @@ module pcileech_tlps128_filter(
         tvalid  <= tlps_in.tvalid && !filter_next && !rst;
         tuser   <= tlps_in.tuser;
         tlast   <= tlps_in.tlast;
-        filter  <= filter_next && !rst;
+        // State moves on valid beats only: an idle cycle can still show the
+        // previous header's tuser[0] and must not end the drop state.
+        filter  <= rst || (tlps_in.tvalid ? filter_next : filter);
     end
     
 endmodule

@@ -76,6 +76,7 @@ module pcileech_pcie_a7 #(
     wire rst_cfgword;                   // clk_sys: clears the control-word delivery gate
     wire cfgword_synced;
     wire rst_pcie_src;                  // clk_sys: rst || ~perst_n || pcie_rst_core
+    wire rst_req;                       // clk_pcie: link session abort (requester tracker, src64, dst64)
     wire drp_ok;                        // clk_sys: reset-held DRP plan applied (gates rst_pcie_n)
 
     pcileech_pcie_a7_rst i_pcileech_pcie_a7_rst(
@@ -149,8 +150,13 @@ module pcileech_pcie_a7 #(
     // PCIe TLP RX/TX <--> FIFO below
     // ----------------------------------------------------------------------------
     
+    // src64 shares the link-session reset with req_rx_cpl (review F1): a
+    // subsystem reset must not cut a packet between the converter and the
+    // completion parser, or the parser's framing and the table drift apart.
+    // Host-side RX consumers still reset on rst_subsys and resynchronise on
+    // the next first beat (the host filter drops orphan tails).
     pcileech_tlps128_src64 i_pcileech_tlps128_src64(
-        .rst                        ( rst_subsys                ),
+        .rst                        ( rst_req                   ),
         .clk_pcie                   ( clk_pcie                  ),
         .tlp_rx                     ( tlp_rx.sink               ),
         .tlps_out                   ( tlps_rx_core.source_lite  )   // -> req_rx_cpl -> tlps_rx
@@ -203,11 +209,11 @@ module pcileech_pcie_a7 #(
     // and the core user reset. Never the host subsystem reset.
     // The completion timer counts clk_pcie, so its frequency must come from
     // the plan (exact core user-clock readback), never an assumed default.
+    assign rst_req = rst_clkpcie || rst_pcie_user;
     if (REQ_CLK_PCIE_HZ != 64'd62_500_000 && REQ_CLK_PCIE_HZ != 64'd125_000_000 &&
         REQ_CLK_PCIE_HZ != 64'd250_000_000) begin : g_req_clk_unbound
         $fatal(1, "REQ_CLK_PCIE_HZ must be bound to the core user clock (62.5/125/250 MHz)");
     end
-    wire rst_req = rst_clkpcie || rst_pcie_user;
     wire [15:0] req_live_rid = { ctx.cfg_bus_number, ctx.cfg_device_number, ctx.cfg_function_number };
 
     wire [255:0] req_free;
