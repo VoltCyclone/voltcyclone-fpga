@@ -14,6 +14,13 @@
 // refused (answered with rdy and no core write) so they cannot undo the plan;
 // host reads of PLAN_ADDR are allowed.
 //
+// Every transaction is bounded, host ones included: if drp_rdy does not come
+// within RDY_TIMEOUT_CYCLES, a host request is answered with 16'hFFFF and
+// counted, a startup request fails the attempt. Either way the port then
+// drains for another RDY_TIMEOUT_CYCLES so a late rdy is absorbed rather than
+// taken as the answer to the next request. (A rdy later than that remains
+// unattributable; a DRP that slow means the core is unusable.)
+//
 // Plan parameters come from the generated RequesterTrackingPlan. PLAN_BOUND
 // must be 1: there are deliberately no usable defaults.
 `timescale 1ns / 1ps
@@ -48,7 +55,9 @@ module pcileech_pcie_drp_startup #(
     output reg   [7:0]  fail_count,         // saturating, attempts that failed
     output reg  [15:0]  read_word,          // word read at the start of the last attempt
     output reg  [15:0]  verify_word,        // word read back by the last attempt
-    output reg   [7:0]  host_refused_count  // saturating, host writes to PLAN_ADDR refused
+    output reg   [7:0]  host_refused_count, // saturating, host writes to PLAN_ADDR refused
+    output reg   [7:0]  host_timeout_count, // saturating, host transactions without drp_rdy
+    output reg          fail_sticky         // any attempt failed since configuration
 );
     initial begin
         if (PLAN_BOUND != 1)
@@ -62,7 +71,7 @@ module pcileech_pcie_drp_startup #(
 
     // ---- startup sequence ---------------------------------------------------
     localparam [2:0] S_IDLE = 3'd0, S_READ = 3'd1, S_WRITE = 3'd2, S_VERIFY = 3'd3,
-                     S_HOST = 3'd4;
+                     S_HOST = 3'd4, S_DRAIN = 3'd5;
     reg  [2:0]  state;
     reg         need_run;           // a reset source asserted since the last attempt began
     reg         abort;              // reset source asserted during an attempt
@@ -76,14 +85,17 @@ module pcileech_pcie_drp_startup #(
         state = S_IDLE; need_run = 1'b1; abort = 1'b0; drp_ok = 1'b0;
         failed = 1'b0; fail_reason = R_NONE; fail_count = 8'd0;
         read_word = 16'd0; verify_word = 16'd0; write_word = 16'd0;
-        host_refused_count = 8'd0; wait_cycles = 16'd0;
+        host_refused_count = 8'd0; host_timeout_count = 8'd0; fail_sticky = 1'b0;
+        wait_cycles = 16'd0;
         hp_valid = 1'b0; hp_we = 1'b0; hp_addr = 9'd0; hp_di = 16'd0;
         drp_en = 1'b0; drp_we = 1'b0; drp_addr = 9'd0; drp_di = 16'd0;
         host_rdy = 1'b0; host_do = 16'd0;
     end
 
     wire waiting = state == S_READ || state == S_WRITE || state == S_VERIFY;
-    wire timed_out = waiting && !drp_rdy && wait_cycles == 16'(RDY_TIMEOUT_CYCLES - 1);
+    wire window_end = !drp_rdy && wait_cycles == 16'(RDY_TIMEOUT_CYCLES - 1);
+    wire timed_out = (waiting || state == S_HOST) && window_end;
+    wire counting = waiting || state == S_HOST || state == S_DRAIN;
     wire refuse_host = hp_valid && hp_we && hp_addr == PLAN_ADDR;
     wire start = state == S_IDLE && need_run && !rst_src;
     wire [15:0] planned = (drp_do & ~PLAN_MASK) | PLAN_VALUE;
@@ -96,9 +108,10 @@ module pcileech_pcie_drp_startup #(
     task automatic finish_fail(input [1:0] reason);
         begin
             failed <= 1'b1;
+            fail_sticky <= 1'b1;
             fail_reason <= reason;
             if (fail_count != 8'hff) fail_count <= fail_count + 8'd1;
-            state <= S_IDLE;
+            state <= reason == R_TIMEOUT ? S_DRAIN : S_IDLE;
         end
     endtask
 
@@ -109,7 +122,7 @@ module pcileech_pcie_drp_startup #(
         if (host_en && !hp_valid) begin
             hp_valid <= 1'b1; hp_we <= host_we; hp_addr <= host_addr; hp_di <= host_di;
         end
-        wait_cycles <= waiting && !drp_rdy ? wait_cycles + 16'd1 : 16'd0;
+        wait_cycles <= counting && !drp_rdy && !window_end ? wait_cycles + 16'd1 : 16'd0;
 
         if (rst_src) begin
             drp_ok <= 1'b0;
@@ -142,7 +155,16 @@ module pcileech_pcie_drp_startup #(
                     host_rdy <= 1'b1;
                     host_do <= drp_do;
                     state <= S_IDLE;
+                end else if (timed_out) begin
+                    hp_valid <= 1'b0;
+                    host_rdy <= 1'b1;
+                    host_do <= 16'hffff;
+                    if (host_timeout_count != 8'hff)
+                        host_timeout_count <= host_timeout_count + 8'd1;
+                    state <= S_DRAIN;
                 end
+            S_DRAIN:                        // absorb a late rdy from a timed-out request
+                if (drp_rdy || window_end) state <= S_IDLE;
             S_READ:
                 if (drp_rdy) begin
                     read_word <= drp_do;

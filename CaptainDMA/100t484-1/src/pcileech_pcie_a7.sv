@@ -420,7 +420,8 @@ module pcileech_pcie_a7 #(
     wire [15:0] drp_di, drp_do;
     wire        drp_failed;
     wire [1:0]  drp_fail_reason;
-    wire [7:0]  drp_fail_count, drp_host_refused_count;
+    wire [7:0]  drp_fail_count, drp_host_refused_count, drp_host_timeout_count;
+    wire        drp_fail_sticky;
     wire [15:0] drp_read_word, drp_verify_word;
 
     pcileech_pcie_drp_startup #(
@@ -451,12 +452,15 @@ module pcileech_pcie_a7 #(
         .fail_count                 ( drp_fail_count            ),
         .read_word                  ( drp_read_word             ),
         .verify_word                ( drp_verify_word           ),
-        .host_refused_count         ( drp_host_refused_count    )
+        .host_refused_count         ( drp_host_refused_count    ),
+        .host_timeout_count         ( drp_host_timeout_count    ),
+        .fail_sticky                ( drp_fail_sticky           )
     );
     // clk_sys status words for pcileech_fifo ro +0x068 (see pcileech_fifo.sv)
     assign dfifo_pcie.drp_status = { drp_verify_word, drp_read_word,
                                      drp_host_refused_count, drp_fail_count,
-                                     12'd0, drp_fail_reason, drp_failed, drp_ok };
+                                     drp_host_timeout_count, 3'd0, drp_fail_sticky,
+                                     drp_fail_reason, drp_failed, drp_ok };
     
     // ----------------------------------------------------------------------------
     // PCIe CORE BELOW

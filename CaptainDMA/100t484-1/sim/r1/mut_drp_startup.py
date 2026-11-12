@@ -34,6 +34,14 @@ MUTANTS = [
     ("swap fail reasons", "localparam [1:0] R_NONE = 2'd0, R_TIMEOUT = 2'd1, R_BASE = 2'd2, R_VERIFY = 2'd3;",
      "localparam [1:0] R_NONE = 2'd0, R_TIMEOUT = 2'd1, R_BASE = 2'd3, R_VERIFY = 2'd2;"),
     ("refusals not counted", "                        host_refused_count <= host_refused_count + 8'd1;", "                        host_refused_count <= host_refused_count;"),
+    ("unbounded host transaction", "    wire timed_out = (waiting || state == S_HOST) && window_end;", "    wire timed_out = waiting && window_end;"),
+    ("no drain after host timeout", "                        host_timeout_count <= host_timeout_count + 8'd1;\n                    state <= S_DRAIN;",
+     "                        host_timeout_count <= host_timeout_count + 8'd1;\n                    state <= S_IDLE;"),
+    ("no drain after startup timeout", "state <= reason == R_TIMEOUT ? S_DRAIN : S_IDLE;", "state <= S_IDLE;"),
+    ("drain ignores late rdy window", "                if (drp_rdy || window_end) state <= S_IDLE;", "                state <= S_IDLE;"),
+    ("timed-out host gets stale data", "                    host_do <= 16'hffff;", "                    host_do <= drp_do;"),
+    ("host timeouts not counted", "                        host_timeout_count <= host_timeout_count + 8'd1;", "                        host_timeout_count <= host_timeout_count;"),
+    ("failure not sticky", "            fail_sticky <= 1'b1;\n", ""),
     ("drp_en held", "        drp_en <= 1'b0;\n        drp_we <= 1'b0;", "        drp_we <= 1'b0;"),
 ]
 

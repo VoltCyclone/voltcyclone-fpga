@@ -252,7 +252,7 @@ module pcileech_fifo #(
     // PCIe REQUESTER STATUS (R1): coherent clk_pcie snapshot, layout in pcileech_req_status.sv
     assign ro[831:320]  = dpcie.req_status;             // +028: MAGIC/VERSION 0x5201 .. +067
     // PCIe DRP STARTUP (R1): reset-held DRP plan status
-    assign ro[847:832]  = dpcie.drp_status[15:0];       // +068: [0] drp_ok, [1] failed, [3:2] reason (1 rdy timeout, 2 base, 3 verify)
+    assign ro[847:832]  = dpcie.drp_status[15:0];       // +068: [0] drp_ok, [1] last attempt failed, [3:2] reason (1 rdy timeout, 2 base, 3 verify), [4] any failure (sticky), [15:8] host DRP timeouts
     assign ro[863:848]  = dpcie.drp_status[31:16];      // +06A: [7:0] failed attempts, [15:8] host plan-address writes refused (saturating)
     assign ro[879:864]  = dpcie.drp_status[47:32];      // +06C: word read at the start of the last attempt
     assign ro[895:880]  = dpcie.drp_status[63:48];      // +06E: word read back by the last attempt
