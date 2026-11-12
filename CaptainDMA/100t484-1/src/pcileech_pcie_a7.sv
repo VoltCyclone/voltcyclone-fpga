@@ -15,6 +15,7 @@
 // (RequesterTrackingPlan, passed down from the top as generics).
 module pcileech_pcie_a7 #(
     parameter integer       REQ_N_NP_MAX            = 0,        // gate: NP admission cap, 1..256
+    parameter longint       REQ_CLK_PCIE_HZ         = 0,        // core user clock (exact-core readback)
     parameter integer       DRP_PLAN_BOUND          = 0,        // must be 1
     parameter [8:0]         DRP_PLAN_ADDR           = 9'h019,
     parameter [15:0]        DRP_PLAN_MASK           = 16'h0000,
@@ -200,6 +201,12 @@ module pcileech_pcie_a7 #(
     // cfg_err_* inputs stay tied off (decision 2026-11-11, count only).
     // Tracker reset is the link session abort, shared with dst64: global rst
     // and the core user reset. Never the host subsystem reset.
+    // The completion timer counts clk_pcie, so its frequency must come from
+    // the plan (exact core user-clock readback), never an assumed default.
+    if (REQ_CLK_PCIE_HZ != 64'd62_500_000 && REQ_CLK_PCIE_HZ != 64'd125_000_000 &&
+        REQ_CLK_PCIE_HZ != 64'd250_000_000) begin : g_req_clk_unbound
+        $fatal(1, "REQ_CLK_PCIE_HZ must be bound to the core user clock (62.5/125/250 MHz)");
+    end
     wire rst_req = rst_clkpcie || rst_pcie_user;
     wire [15:0] req_live_rid = { ctx.cfg_bus_number, ctx.cfg_device_number, ctx.cfg_function_number };
 
@@ -269,7 +276,9 @@ module pcileech_pcie_a7 #(
 
     // The gate has no pre-core release path: a RESERVED entry is issued by
     // the observer or recovered by its timer, so rel_valid stays low.
-    pcileech_req_table i_pcileech_req_table(
+    pcileech_req_table #(
+        .CLK_PCIE_HZ                ( REQ_CLK_PCIE_HZ           )
+    ) i_pcileech_req_table(
         .clk                        ( clk_pcie                  ),
         .rst                        ( rst_req                   ),
         .flr                        ( ctx.cfg_received_func_lvl_rst ),

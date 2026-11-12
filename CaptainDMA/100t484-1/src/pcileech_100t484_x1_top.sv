@@ -18,6 +18,7 @@ module pcileech_100t484_x1_top #(
     // R1 requester-tracking plan: no usable defaults. Bound as generics by the
     // generated requester_plan.tcl; elaboration fails without it.
     parameter integer REQ_N_NP_MAX            = 0,
+    parameter longint REQ_CLK_PCIE_HZ         = 0,
     parameter integer DRP_PLAN_BOUND          = 0,
     parameter [8:0]   DRP_PLAN_ADDR           = 9'h019,
     parameter [15:0]  DRP_PLAN_MASK           = 16'h0000,
@@ -205,6 +206,7 @@ module pcileech_100t484_x1_top #(
     
     pcileech_pcie_a7 #(
         .REQ_N_NP_MAX           ( REQ_N_NP_MAX          ),
+        .REQ_CLK_PCIE_HZ        ( REQ_CLK_PCIE_HZ       ),
         .DRP_PLAN_BOUND         ( DRP_PLAN_BOUND        ),
         .DRP_PLAN_ADDR          ( DRP_PLAN_ADDR         ),
         .DRP_PLAN_MASK          ( DRP_PLAN_MASK         ),
