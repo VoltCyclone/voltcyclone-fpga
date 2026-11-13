@@ -193,6 +193,7 @@ module pcileech_com #(
     wire        com_rx_valid64 = com_rx_valid64_dw[0] & com_rx_valid64_dw[1];
     wire [63:0] com_rx_dout;
     wire        com_rx_valid;
+    wire        com_rx_full;
    
     always @ ( posedge clk_c )
         if ( rst_com | (~com_rx_valid32 & com_rx_valid64_dw[0] & com_rx_valid64_dw[1]) )
@@ -216,7 +217,7 @@ module pcileech_com #(
         .wr_en          ( com_rx_valid64            ),
         .rd_en          ( 1'b1                      ),
         .dout           ( com_rx_dout               ),
-        .full           (                           ),
+        .full           ( com_rx_full                ),
         .empty          (                           ),
         .valid          ( com_rx_valid              )
     );
@@ -279,11 +280,23 @@ module pcileech_com #(
 `ifdef ENABLE_FT601
 
     generate if ( FT601_PHY_MMCM ) begin : g_ft601_phy
+        // FIFO reset recovery outlasts rst_com. Do not consume FT601 words
+        // until the RX write-domain full flag reports that recovery is over.
+        // Latch readiness for this COM session: a later full condition must
+        // not reset the PHY and discard unrelated in-flight TX/RX traffic.
+        reg rx_ready = 1'b0;
+        always @ ( posedge clk_c or posedge rst_com )
+            if ( rst_com )
+                rx_ready <= 1'b0;
+            else if ( !rst_comrx_fifo && !com_rx_full )
+                rx_ready <= 1'b1;
+        wire rst_phy = rst_com || !rx_ready;
+
         pcileech_ft601_phy i_pcileech_ft601_phy(
             // SYS
             .c0                 ( clk_c                 ),
             .c180               ( ft601_c180            ),
-            .rst                ( rst_com               ),
+            .rst                ( rst_phy               ),
             .arst               ( com_arst              ),
             // TO/FROM FT601 PADS
             .FT601_DATA         ( ft601_data            ),

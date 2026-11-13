@@ -1,6 +1,6 @@
 # COM reset tests with Vivado FIFO models
 
-This bench uses production `pcileech_com.sv`, real XPM reset synchronizers and
+`tb_com_vendor.sv` uses production `pcileech_com.sv`, real XPM reset synchronizers and
 all three configured COM FIFO implementations. It injects stimulus at COM's
 clock-controller and PHY stream boundaries using explicit hierarchical forces.
 It does not qualify the MMCM, physical FT601 protocol or electrical timing.
@@ -50,3 +50,31 @@ metastability or routed delays. The tests hold reset while clocks return and
 settle before RX ingress. They do not establish the earliest legal RX restart,
 short/adjacent-reset support, a physical clock-loss reset sequence, or the
 seven PCIe subsystem-reset FIFO destinations. R4 remains open.
+
+## Pin-driven earliest RX
+
+`tb_com_early_rx.sv` drives FT601 pins using `sim/ft601/ft601_model.sv` and keeps
+the production PHY/packer/XPM/FIFO path intact. Only the MMCM clock/status
+outputs are forced: c0/c180 have ideal +0.5/+5.5 ns phases. RXF_N is already
+low before reset releases; there is no RX settling delay. The separate SYS
+boot-command stream is allowed to finish before scoring begins.
+
+Run with the same arguments above plus `--bench early_rx --matrix`. The nine
+cases combine three reset-release phases and three SYS-clock/relative-phase
+settings; the modeled FT601 clock stays at 100 MHz. Each case must deliver
+48 correctly ordered pairs from exactly 96 accepted pin transfers across
+initial release, a running-clock COM reset, and a stopped/restarted COM clock.
+The scoreboard is not cleared between epochs. A forced-full probe after each
+drained epoch checks that normal full cannot reset an established PHY session.
+
+Add `--rx-reset-cycles 20 --case 0` without `--matrix` as a positive control:
+extend the staged RX FIFO reset from 2 to 20 counter cycles and require the
+same complete stream. The PHY must follow actual FIFO readiness, not a guessed
+startup delay. Negative controls `--mutant bypass_rx_ready` and
+`--mutant live_full_reset` must fail for the expected FIFO-not-ready or live-full
+reset reason after successful compilation/elaboration.
+
+This closes only the modeled earliest-RX recovery path. It does not establish
+simultaneous SYS boot-command/RX behavior, TX replay across resets, sustained
+full/backpressure handling, reset during active traffic, short/adjacent reset
+requests, physical clock-loss reset sequencing or electrical qualification.

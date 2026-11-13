@@ -36,6 +36,18 @@ MUTANTS = {
         0,
         "COM_RX_ORDER",
     ),
+    "bypass_rx_ready": (
+        "wire rst_phy = rst_com || !rx_ready;",
+        "wire rst_phy = rst_com;",
+        0,
+        "COM_EARLY_FIFO_NOT_READY",
+    ),
+    "live_full_reset": (
+        "wire rst_phy = rst_com || !rx_ready;",
+        "wire rst_phy = rst_com || com_rx_full;",
+        0,
+        "COM_EARLY_LIVE_FULL_RESET",
+    ),
 }
 
 
@@ -45,6 +57,7 @@ def run(
     name: str,
     require_pass: bool = False,
     expected_failure: str | None = None,
+    pass_marker: str = "COM_VENDOR_PASS",
 ) -> None:
     """Run one tool stage and grade its log as well as its exit status."""
     with (work / f"{name}.log").open("w") as log:
@@ -57,8 +70,10 @@ def run(
         )
     output = (work / f"{name}.log").read_text(errors="replace")
     if expected_failure:
-        if result.returncode != 0 or not re.search(
-            r"(?m)^Fatal: " + re.escape(expected_failure), output
+        if (
+            result.returncode != 0
+            or re.search(r"(?m)^ERROR:|FT601_MODEL_ERR", output)
+            or not re.search(r"(?m)^Fatal: " + re.escape(expected_failure), output)
         ):
             raise RuntimeError(
                 f"{name} mutant survived or failed incorrectly\n{output[-6000:]}"
@@ -66,14 +81,10 @@ def run(
         print(f"COM_MUTANT_KILLED {name}", flush=True)
         return
     errors = re.search(
-        r"(?m)^(?:ERROR:|FATAL_ERROR:|Fatal:)|\bCOM_(?:RX_|TX_|NO_RECOVERY|READY_|COUNTS|VENDOR_TIMEOUT)",
+        r"(?m)^(?:ERROR:|FATAL_ERROR:|Fatal:)|FT601_MODEL_ERR|\bCOM_(?:RX_|TX_|NO_RECOVERY|READY_|COUNTS|VENDOR_TIMEOUT)",
         output,
     )
-    if (
-        result.returncode
-        or errors
-        or (require_pass and "COM_VENDOR_PASS" not in output)
-    ):
+    if result.returncode or errors or (require_pass and pass_marker not in output):
         raise RuntimeError(f"{name} failed rc={result.returncode}\n{output[-6000:]}")
     print(f"COM_STAGE_PASS {name}", flush=True)
 
@@ -90,16 +101,44 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--case", type=int, choices=(0, 1, 2), default=None)
     parser.add_argument("--mutant", choices=tuple(MUTANTS))
+    parser.add_argument("--bench", choices=("reset", "early_rx"), default="reset")
+    parser.add_argument(
+        "--rx-reset-cycles",
+        type=int,
+        choices=(2, 20),
+        default=2,
+        help="early-RX positive control: extend the staged RX FIFO reset",
+    )
     parser.add_argument(
         "--matrix", action="store_true", help="three relative clock phases/rates"
     )
     args = parser.parse_args()
+    early_mutants = ("bypass_rx_ready", "live_full_reset")
+    if args.mutant in early_mutants and args.bench != "early_rx":
+        parser.error("RX readiness mutants require --bench early_rx")
+    if args.bench == "early_rx" and args.mutant not in (None, *early_mutants):
+        parser.error("the existing reset mutants require --bench reset")
+    if args.rx_reset_cycles != 2 and args.bench != "early_rx":
+        parser.error("extended RX reset control requires --bench early_rx")
     work = args.out.resolve()
     work.mkdir(parents=True, exist_ok=False)
     src = work / "src"
     src.mkdir()
     for name in SOURCES:
         shutil.copy2(args.board / "src" / name, src / name)
+    if args.rx_reset_cycles != 2:
+        rtl = src / "pcileech_com.sv"
+        original = rtl.read_text()
+        old = "rst_comrx_fifo <= (tickcount64_com < 2);"
+        if original.count(old) != 1:
+            raise ValueError(
+                "extended reset control requires exactly one reset counter"
+            )
+        rtl.write_text(
+            original.replace(
+                old, f"rst_comrx_fifo <= (tickcount64_com < {args.rx_reset_cycles});"
+            )
+        )
     if args.mutant:
         old, new, _case, _failure = MUTANTS[args.mutant]
         rtl = src / "pcileech_com.sv"
@@ -107,7 +146,14 @@ def main() -> None:
         if original.count(old) != 1:
             raise ValueError(f"mutant {args.mutant} match count {original.count(old)}")
         rtl.write_text(original.replace(old, new))
-    shutil.copy2(HERE / "tb_com_vendor.sv", src / "tb_com_vendor.sv")
+    top = "tb_com_early_rx" if args.bench == "early_rx" else "tb_com_vendor"
+    bench = src / f"{top}.sv"
+    shutil.copy2(HERE / bench.name, bench)
+    extras = []
+    if args.bench == "early_rx":
+        model = args.board / "sim/ft601/ft601_model.sv"
+        shutil.copy2(model, src / model.name)
+        extras.append(src / model.name)
     models = []
     for name in FIFOS:
         source = (
@@ -132,7 +178,8 @@ def main() -> None:
             args.vivado / "data/verilog/src/glbl.v",
             *models,
             *[src / n for n in SOURCES if n.endswith(".sv")],
-            src / "tb_com_vendor.sv",
+            *extras,
+            bench,
         ],
         work,
         "compile",
@@ -148,7 +195,7 @@ def main() -> None:
             "xpm",
             "-L",
             "unisims_ver",
-            "work.tb_com_vendor",
+            f"work.{top}",
             "work.glbl",
             "-s",
             "com_vendor",
@@ -163,7 +210,10 @@ def main() -> None:
     )
     clocks = [(5.0, 5.0, 1.3)]
     if args.matrix:
-        clocks += [(4.0, 5.0, 2.7), (5.0, 6.5, 0.9)]
+        clocks += [
+            (4.0, 5.0, 2.7),
+            (5.0, 5.0, 4.7) if args.bench == "early_rx" else (5.0, 6.5, 0.9),
+        ]
     for index, (sys_half, com_half, phase) in enumerate(clocks):
         for scenario in cases:
             argv = [bin_dir / "xsim", "com_vendor", "-runall"]
@@ -180,6 +230,9 @@ def main() -> None:
                 f"case-{scenario}-clock-{index}",
                 require_pass=True,
                 expected_failure=MUTANTS[args.mutant][3] if args.mutant else None,
+                pass_marker=(
+                    "COM_EARLY_PASS" if args.bench == "early_rx" else "COM_VENDOR_PASS"
+                ),
             )
     print(
         f"COM_VENDOR_RUN_PASS cases={len(cases)*len(clocks)} mutant={args.mutant}",
