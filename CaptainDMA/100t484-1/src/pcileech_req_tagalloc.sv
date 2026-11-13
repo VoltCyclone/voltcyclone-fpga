@@ -25,7 +25,18 @@ module pcileech_req_tagalloc (
 
     wire [255:0] in_range = ext_tag_en ? {256{1'b1}} : {224'h0, 32'hFFFF_FFFF};
     wire [255:0] cand     = free & in_range;
-    wire [255:0] at_or_after = cand & ~((256'd1 << ptr) - 256'd1);
+    // Build each pointer mask bit independently. A shifted 256-bit one minus
+    // one creates a wide carry chain on the admission path; these comparisons
+    // use only the 8-bit pointer and do not change selection or cycle latency.
+    wire [255:0] at_or_after;
+    genvar index;
+    generate for (index = 0; index < 256; index = index + 1) begin : g_pointer_mask
+        // At index 255 this is constant for binary pointers, but retaining the
+        // comparison also preserves the old mask's X/Z-pointer propagation.
+        /* verilator lint_off CMPCONST */
+        assign at_or_after[index] = cand[index] & (8'(index) >= ptr);
+        /* verilator lint_on CMPCONST */
+    end endgenerate
 
     function automatic [8:0] lowest(input [255:0] v);   // {found, index}
         integer k;
