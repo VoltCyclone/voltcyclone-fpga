@@ -237,7 +237,9 @@ module pcileech_req_table #(
     // sweep), so their deltas add. An FLR moves every ISSUED entry that survives the
     // cycle (n_issued + d_iss: expiry is suppressed and a same-cycle issue goes straight
     // to QUARANTINED) into QUARANTINED.
-    wire [1:0] old_adm = st[adm_tag];
+    // Admission takes only the allocator's offer, which is FREE by construction
+    // (free[g] above), so it leaves no counted state. Reading st[adm_tag] here put a
+    // 256:1 mux behind the allocator and failed routed setup at n_quarantined.
     wire [1:0] old_up  = st[up_tag];
     wire       iss_ok  = iss_valid && (st[iss_tag] == `REQ_ST_RESERVED);
     reg  [9:0] d_res, d_iss, d_q;               // two's complement deltas
@@ -251,7 +253,7 @@ module pcileech_req_table #(
     endtask
     always @* begin
         d_res = 10'd0; d_iss = 10'd0; d_q = 10'd0;
-        if (adm_valid) begin leave(old_adm); d_res = d_res + 10'd1; end
+        if (adm_valid) d_res = d_res + 10'd1;
         if (iss_ok) begin
             d_res = d_res - 10'd1;
             if (iss_q) d_q   = d_q   + 10'd1;
@@ -271,4 +273,9 @@ module pcileech_req_table #(
             n_quarantined <= n_quarantined + d_q[8:0] + (flr ? n_issued + d_iss[8:0] : 9'd0);
         end
     assign trn_pending = (n_reserved != 9'd0) || (n_issued != 9'd0);
+    // synthesis translate_off
+    always @(posedge clk)
+        if (!rst && adm_valid && st[adm_tag] !== `REQ_ST_FREE)
+            $error("req_table: admission of non-FREE tag %0d (state %0d)", adm_tag, st[adm_tag]);
+    // synthesis translate_on
 endmodule
