@@ -24,7 +24,10 @@ module pcileech_100t484_x1_top #(
     parameter [15:0]  DRP_PLAN_VALUE          = 16'h0000,
     parameter [15:0]  DRP_PLAN_CHECK_MASK     = 16'h0000,
     parameter [15:0]  DRP_PLAN_BASE_EXPECT    = 16'h0000,
-    parameter integer DRP_RDY_TIMEOUT_CYCLES  = 0
+    parameter integer DRP_RDY_TIMEOUT_CYCLES  = 0,
+    // FT601 PHY: 1 = compensated MMCM clock (default), 0 = legacy fallback.
+    // The legacy build must omit pcileech_ft601_mmcm.xdc.
+    parameter integer FT601_PHY_MMCM          = 1
 ) (
     // SYS
     input           clk,
@@ -156,7 +159,9 @@ module pcileech_100t484_x1_top #(
     // BUFFERED COMMUNICATION DEVICE (FT601)
     // ----------------------------------------------------
     
-    pcileech_com i_pcileech_com (
+    pcileech_com #(
+        .FT601_PHY_MMCM     ( FT601_PHY_MMCM        )
+    ) i_pcileech_com (
         // SYS
         .clk                ( clk                   ),
         .clk_com            ( ft601_clk             ),

@@ -110,6 +110,8 @@ set files [list \
  [file normalize "${origin_dir}/src/pcileech_com.sv" ]\
  [file normalize "${origin_dir}/src/pcileech_fifo.sv"]\
  [file normalize "${origin_dir}/src/pcileech_ft601.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_ft601_clk.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_ft601_phy.sv"]\
  [file normalize "${origin_dir}/src/pcileech_mux.sv"]\
  [file normalize "${origin_dir}/src/pcileech_pcie_a7.sv"]\
  [file normalize "${origin_dir}/src/pcileech_pcie_cfg_a7.sv"]\
@@ -150,6 +152,14 @@ set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
 
 set file "src/pcileech_ft601.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_ft601_clk.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_ft601_phy.sv"
 set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
 
@@ -663,6 +673,14 @@ set obj [get_filesets constrs_1]
 set file "[file normalize ${origin_dir}/src/pcileech_100t484_x1_captaindma_100t.xdc]"
 set file_imported [import_files -fileset constrs_1 [list $file]]
 set file "src/pcileech_100t484_x1_captaindma_100t.xdc"
+set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
+set_property -name "file_type" -value "XDC" -objects $file_obj
+
+# FT601 MMCM clock constraints, for the default FT601_PHY_MMCM = 1. A legacy
+# build (top generic FT601_PHY_MMCM=0) must remove this file from constrs_1.
+set file "[file normalize ${origin_dir}/src/pcileech_ft601_mmcm.xdc]"
+set file_imported [import_files -fileset constrs_1 [list $file]]
+set file "src/pcileech_ft601_mmcm.xdc"
 set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
 set_property -name "file_type" -value "XDC" -objects $file_obj
 

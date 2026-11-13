@@ -85,9 +85,9 @@ set_output_delay -clock [get_clocks net_ft601_clk] -min -4.8 [get_ports {ft601_w
 set_output_delay -clock [get_clocks net_ft601_clk] -max 1.0 [get_ports {{ft601_be[*]} {ft601_data[*]}}]
 set_output_delay -clock [get_clocks net_ft601_clk] -min -4.8 [get_ports {{ft601_be[*]} {ft601_data[*]}}]
 
-set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_OE_N_reg]
-set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_RD_N_reg]
-set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_WR_N_reg]
+# Pack the strobe output registers into OLOGIC. Set on the ports so it holds
+# for both FT601 PHYs (FT601_PHY_MMCM 0 or 1).
+set_property IOB TRUE [get_ports {ft601_oe_n ft601_rd_n ft601_wr_n}]
 # Data OFFs and tristate TFFs request IOB packing on their RTL instances.
 
 # Per-pin FT601 tristate registers are timed as ordinary single-cycle outputs.

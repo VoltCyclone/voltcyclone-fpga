@@ -12,10 +12,14 @@
 //`define ENABLE_ETH
 `define ENABLE_FT601
 
-module pcileech_com (
+module pcileech_com #(
+    // 1: FT601 on the compensated MMCM clock (pcileech_ft601_clk/_phy).
+    // 0: legacy pcileech_ft601 on the uncompensated pin clock (fallback).
+    parameter integer   FT601_PHY_MMCM = 1
+) (
     // SYS
     input               clk,                // 100MHz SYSTEM CLK
-    input               clk_com,            // COMMUNICATION CORE CLK
+    input               clk_com,            // COMMUNICATION CORE CLK PIN (FT601 CLK)
     input               rst,
     output              led_state_txdata,
     input               led_state_invert,
@@ -79,10 +83,47 @@ module pcileech_com (
         };
         
     // ----------------------------------------------------------------------------
+    // COM CLOCK:
+    // clk_c is the com domain clock. With FT601_PHY_MMCM it is c0 from
+    // pcileech_ft601_clk, phase-compensated to the FT601 CLK pin; com_arst is
+    // then phy_not_ready, a clk register that is high during rst and whenever
+    // the MMCM is not locked to a running FT601 clock. Otherwise clk_c is the
+    // pin clock and com_arst is rst.
+    // ----------------------------------------------------------------------------
+    wire clk_c;
+    wire ft601_c180;
+    wire com_arst;
+`ifdef ENABLE_FT601
+    generate if ( FT601_PHY_MMCM ) begin : g_ft601_mmcm_clk
+        wire phy_not_ready;
+        pcileech_ft601_clk i_ft601_clk (
+            .clk                ( clk                   ),
+            .rst                ( rst                   ),
+            .ft601_clk          ( clk_com               ),
+            .c0                 ( clk_c                 ),
+            .c180               ( ft601_c180            ),
+            .phy_not_ready      ( phy_not_ready         )
+        );
+        assign com_arst = phy_not_ready;
+    end
+    else begin : g_ft601_pin_clk
+        assign clk_c      = clk_com;
+        assign ft601_c180 = 1'b0;
+        assign com_arst   = rst;
+    end
+    endgenerate
+`else
+    assign clk_c      = clk_com;
+    assign ft601_c180 = 1'b0;
+    assign com_arst   = rst;
+`endif /* ENABLE_FT601 */
+
+    // ----------------------------------------------------------------------------
     // RESETS:
-    // rst is a clk-domain register. rst_com is its clk_com copy: asserted
-    // asynchronously (so it holds even while ft601_clk is stopped - the FT601
-    // is itself in reset then) and released synchronously to clk_com.
+    // rst is a clk-domain register. rst_com is the com-domain reset: asserted
+    // asynchronously from com_arst (so it holds even while the FT601 clock is
+    // stopped - the FT601 is itself in reset then) and released synchronously
+    // to clk_c.
     // ----------------------------------------------------------------------------
     wire rst_com;
     xpm_cdc_async_rst #(
@@ -90,8 +131,8 @@ module pcileech_com (
         .INIT_SYNC_FF       ( 0                     ),
         .RST_ACTIVE_HIGH    ( 1                     )
     ) i_cdc_rst_com (
-        .src_arst           ( rst                   ),
-        .dest_clk           ( clk_com               ),
+        .src_arst           ( com_arst              ),
+        .dest_clk           ( clk_c                 ),
         .dest_arst          ( rst_com               )
     );
 
@@ -100,27 +141,27 @@ module pcileech_com (
         tickcount64 <= rst ? 0 : tickcount64 + 1;
 
     time tickcount64_com = 0;
-    always @ ( posedge clk_com )
+    always @ ( posedge clk_c )
         tickcount64_com <= rst_com ? 0 : tickcount64_com + 1;
 
-    // RX clock-crossing FIFO reset: held for two clk_com ticks after rst_com
+    // RX clock-crossing FIFO reset: held for two clk_c ticks after rst_com
     // releases. A flop with rst_com as asynchronous preset, so the FIFO's
     // asynchronous rst pin is never driven by a LUT and assertion still does
-    // not wait for clk_com.
+    // not wait for clk_c.
     reg rst_comrx_fifo = 1'b1;
-    always @ ( posedge clk_com or posedge rst_com )
+    always @ ( posedge clk_c or posedge rst_com )
         if ( rst_com )
             rst_comrx_fifo <= 1'b1;
         else
             rst_comrx_fifo <= (tickcount64_com < 2);
 
-    // TX clock-crossing FIFO reset (wr_clk = clk, rd_clk = clk_com): a clk
-    // register held from rst until the clk_com side has itself left reset.
-    // rst_comrx_fifo (a clk_com register, released two clk_com ticks after
+    // TX clock-crossing FIFO reset (wr_clk = clk, rd_clk = clk_c): a clk
+    // register held from rst until the clk_c side has itself left reset.
+    // rst_comrx_fifo (a clk_c register, released two clk_c ticks after
     // rst_com) crosses back to clk through an XPM reset synchronizer, so the
-    // FIFO's read side has run clk_com for several edges with reset asserted
+    // FIFO's read side has run clk_c for several edges with reset asserted
     // even when ft601_clk was stopped for the whole of rst. No loop: the
-    // clk_com side depends only on rst. The pulse is never shorter than rst.
+    // clk_c side depends only on com_arst. The pulse is never shorter than rst.
     wire rst_comrx_fifo_clk;
     xpm_cdc_async_rst #(
         .DEST_SYNC_FF       ( 4                     ),
@@ -141,8 +182,8 @@ module pcileech_com (
     // ----------------------------------------------------------------------------
     // COMMUNICATION CORE RX DATA BELOW:
     // 1: convert 32-bit signal into 64-bit signal using logic.
-    // 2: change clock domain from clk_com to clk using a very shallow fifo.
-    //    due to previous 32->64 conversion this will be fine if: 2*clk_com < clk. 
+    // 2: change clock domain from clk_c to clk using a very shallow fifo.
+    //    due to previous 32->64 conversion this will be fine if: 2*clk_c < clk. 
     // ----------------------------------------------------------------------------
     
     wire [31:0] com_rx_data32;
@@ -153,7 +194,7 @@ module pcileech_com (
     wire [63:0] com_rx_dout;
     wire        com_rx_valid;
    
-    always @ ( posedge clk_com )
+    always @ ( posedge clk_c )
         if ( rst_com | (~com_rx_valid32 & com_rx_valid64_dw[0] & com_rx_valid64_dw[1]) )
             com_rx_valid64_dw <= 2'b00;
         else if ( com_rx_valid32 && (com_rx_data32 == 32'h66665555) && (com_rx_data64[31:0] == 32'h66665555) )
@@ -169,7 +210,7 @@ module pcileech_com (
     
     fifo_64_64_clk2_comrx i_fifo_64_64_clk2_comrx(
         .rst            ( rst_comrx_fifo            ),
-        .wr_clk         ( clk_com                   ),
+        .wr_clk         ( clk_c                     ),
         .rd_clk         ( clk                       ),
         .din            ( com_rx_data64             ),
         .wr_en          ( com_rx_valid64            ),
@@ -205,7 +246,7 @@ module pcileech_com (
     assign led_state_txdata     = com_tx_prog_full ^ led_state_invert;
     
     fifo_32_32_clk1_comtx i_fifo_32_32_clk2_comtx(
-        .clk            ( clk_com                   ),
+        .clk            ( clk_c                     ),
         .srst           ( rst_com                   ),
         .din            ( com_tx_data               ),
         .wr_en          ( com_tx_wr_en              ),
@@ -219,7 +260,7 @@ module pcileech_com (
         .valid          ( core_din_wr_en            )
     );
     fifo_256_32_clk2_comtx i_fifo_256_32_clk2_comtx(
-        .rd_clk         ( clk_com                   ),
+        .rd_clk         ( clk_c                     ),
         .wr_clk         ( clk                       ),
         .rst            ( rst_comtx_fifo            ),
         .din            ( dfifo.com_din             ),
@@ -236,27 +277,55 @@ module pcileech_com (
     // FT601 USB3 BELOW:
     // ----------------------------------------------------
 `ifdef ENABLE_FT601
-    
-    pcileech_ft601 i_pcileech_ft601(
-        // SYS
-        .clk                ( clk_com               ),
-        .rst                ( rst_com               ),
-        // TO/FROM FT601 PADS
-        .FT601_DATA         ( ft601_data            ),
-        .FT601_BE           ( ft601_be              ),
-        .FT601_TXE_N        ( ft601_txe_n           ),
-        .FT601_RXF_N        ( ft601_rxf_n           ),
-        .FT601_SIWU_N       ( ft601_siwu_n          ),
-        .FT601_WR_N         ( ft601_wr_n            ),
-        .FT601_RD_N         ( ft601_rd_n            ),
-        .FT601_OE_N         ( ft601_oe_n            ),
-        // TO/FROM FIFO
-        .dout               ( com_rx_data32         ),  // -> [31:0]
-        .dout_valid         ( com_rx_valid32        ),  // ->        
-        .din                ( core_din              ),  // <- [31:0]
-        .din_wr_en          ( core_din_wr_en        ),  // <-
-        .din_req_data       ( core_din_ready        )   // ->
-    );
+
+    generate if ( FT601_PHY_MMCM ) begin : g_ft601_phy
+        pcileech_ft601_phy i_pcileech_ft601_phy(
+            // SYS
+            .c0                 ( clk_c                 ),
+            .c180               ( ft601_c180            ),
+            .rst                ( rst_com               ),
+            .arst               ( com_arst              ),
+            // TO/FROM FT601 PADS
+            .FT601_DATA         ( ft601_data            ),
+            .FT601_BE           ( ft601_be              ),
+            .FT601_TXE_N        ( ft601_txe_n           ),
+            .FT601_RXF_N        ( ft601_rxf_n           ),
+            .FT601_SIWU_N       ( ft601_siwu_n          ),
+            .FT601_WR_N         ( ft601_wr_n            ),
+            .FT601_RD_N         ( ft601_rd_n            ),
+            .FT601_OE_N         ( ft601_oe_n            ),
+            // TO/FROM FIFO
+            .dout               ( com_rx_data32         ),  // -> [31:0]
+            .dout_valid         ( com_rx_valid32        ),  // ->
+            .din                ( core_din              ),  // <- [31:0]
+            .din_wr_en          ( core_din_wr_en        ),  // <-
+            .din_req_data       ( core_din_ready        ),  // ->
+            .tx_order_err       (                       )
+        );
+    end
+    else begin : g_ft601_legacy
+        pcileech_ft601 i_pcileech_ft601(
+            // SYS
+            .clk                ( clk_c                 ),
+            .rst                ( rst_com               ),
+            // TO/FROM FT601 PADS
+            .FT601_DATA         ( ft601_data            ),
+            .FT601_BE           ( ft601_be              ),
+            .FT601_TXE_N        ( ft601_txe_n           ),
+            .FT601_RXF_N        ( ft601_rxf_n           ),
+            .FT601_SIWU_N       ( ft601_siwu_n          ),
+            .FT601_WR_N         ( ft601_wr_n            ),
+            .FT601_RD_N         ( ft601_rd_n            ),
+            .FT601_OE_N         ( ft601_oe_n            ),
+            // TO/FROM FIFO
+            .dout               ( com_rx_data32         ),  // -> [31:0]
+            .dout_valid         ( com_rx_valid32        ),  // ->        
+            .din                ( core_din              ),  // <- [31:0]
+            .din_wr_en          ( core_din_wr_en        ),  // <-
+            .din_req_data       ( core_din_ready        )   // ->
+        );
+    end
+    endgenerate
 `endif /* ENABLE_FT601 */
 
     // ----------------------------------------------------
@@ -266,7 +335,7 @@ module pcileech_com (
 
     pcileech_eth i_pcileech_eth(
         // SYS
-        .clk                ( clk_com               ),
+        .clk                ( clk_c                 ),
         .rst                ( rst_com               ),
         // MAC/RMII
         .eth_clk50          ( eth_clk50             ),
