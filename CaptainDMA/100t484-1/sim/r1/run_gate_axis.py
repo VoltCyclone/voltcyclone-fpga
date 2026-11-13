@@ -55,7 +55,7 @@ def main():
             ]
         )
         log = run([str(work / "obj" / "Vtb_req_gate")], timeout=60)
-        if "R1_TB_PASS tb_req_gate" not in log or "R1_TB_FAIL" in log:
+        if "R1_TB_PASS tb_req_gate" not in log or "R1_TB_FAIL" in log or "\nERROR: " in "\n" + log:
             raise RuntimeError(log)
         print("[PASS] IfAXIS128 adapter lint and scoreboard")
         print(log.rstrip())
@@ -82,7 +82,7 @@ def main():
             ]
         )
         log = run([str(tx_obj / "Vtb_req_tx_path")], timeout=60)
-        if "R1_TB_PASS tb_req_tx_path" not in log or "R1_TB_FAIL" in log:
+        if "R1_TB_PASS tb_req_tx_path" not in log or "R1_TB_FAIL" in log or "\nERROR: " in "\n" + log:
             raise RuntimeError(log)
         print(log.rstrip())
 
@@ -108,7 +108,7 @@ def main():
                 ]
             )
             log = run([str(obj / "Vtb_rx_subsys_reset")], timeout=120)
-            passed = "R1_TB_PASS tb_rx_subsys_reset" in log and "R1_TB_FAIL" not in log
+            passed = "R1_TB_PASS tb_rx_subsys_reset" in log and "R1_TB_FAIL" not in log and "\nERROR: " not in "\n" + log
             if passed != (old_wiring == 0):
                 raise RuntimeError(f"tb_rx_subsys_reset OLD_WIRING={old_wiring} unexpected:\n{log}")
             print(f"[PASS] tb_rx_subsys_reset OLD_WIRING={old_wiring} "

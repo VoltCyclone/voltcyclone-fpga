@@ -2,10 +2,12 @@
 """Run the R1 requester-tracking benches.
 
 Each bench is compiled with Icarus Verilog (-g2012) against the board sources and
-must print ``R1_TB_PASS``; any ``R1_TB_FAIL``/``R1_TB_FAILED`` line or a missing
-pass marker fails the run. RTL under test is also linted with Verilator when it is
-installed. Usage: ``python3 run_r1.py [bench ...]`` (default: all ``tb_*.sv``).
+must print ``R1_TB_PASS``; any ``R1_TB_FAIL``/``R1_TB_FAILED`` line, a simulator
+``ERROR:`` line (RTL ``$error`` checks) or a missing pass marker fails the run.
+RTL under test is also linted with Verilator when it is installed.
+Usage: ``python3 run_r1.py [bench ...]`` (default: all ``tb_*.sv``).
 """
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +72,11 @@ CASES = {
 }
 
 
+
+def sim_errors(text: str) -> list:
+    """Simulator ERROR: lines, which Icarus prints for a failed RTL $error check."""
+    return re.findall(r"^ERROR: .*$", text, re.M)
+
 def run_bench(name, rtl, workdir, parameters=None):
     out = workdir / f"{name}.vvp"
     argv = [
@@ -98,6 +105,7 @@ def run_bench(name, rtl, workdir, parameters=None):
         ran.returncode == 0
         and f"R1_TB_PASS {name}" in text
         and "R1_TB_FAIL" not in text
+        and not sim_errors(text)
     )
     return ok, text
 

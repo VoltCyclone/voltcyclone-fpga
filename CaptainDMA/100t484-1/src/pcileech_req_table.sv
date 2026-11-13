@@ -240,42 +240,51 @@ module pcileech_req_table #(
     // Admission takes only the allocator's offer, which is FREE by construction
     // (free[g] above), so it leaves no counted state. Reading st[adm_tag] here put a
     // 256:1 mux behind the allocator and failed routed setup at n_quarantined.
+    // n_live counts ISSUED + QUARANTINED with its own delta. An FLR only moves entries
+    // between the two, so the quarantined count after an FLR is n_live + d_live. That
+    // keeps one adder on the FLR path instead of n_issued + d_iss feeding a second one.
     wire [1:0] old_up  = st[up_tag];
     wire       iss_ok  = iss_valid && (st[iss_tag] == `REQ_ST_RESERVED);
-    reg  [9:0] d_res, d_iss, d_q;               // two's complement deltas
+    reg  [9:0] d_res, d_iss, d_q, d_live;       // two's complement deltas
+    reg  [8:0] n_live;                          // n_issued + n_quarantined
     task automatic leave(input [1:0] s);
         case (s)
             `REQ_ST_RESERVED:    d_res = d_res - 10'd1;
-            `REQ_ST_ISSUED:      d_iss = d_iss - 10'd1;
-            `REQ_ST_QUARANTINED: d_q   = d_q   - 10'd1;
+            `REQ_ST_ISSUED:      begin d_iss = d_iss - 10'd1; d_live = d_live - 10'd1; end
+            `REQ_ST_QUARANTINED: begin d_q   = d_q   - 10'd1; d_live = d_live - 10'd1; end
             default: ;
         endcase
     endtask
     always @* begin
-        d_res = 10'd0; d_iss = 10'd0; d_q = 10'd0;
+        d_res = 10'd0; d_iss = 10'd0; d_q = 10'd0; d_live = 10'd0;
         if (adm_valid) d_res = d_res + 10'd1;
         if (iss_ok) begin
             d_res = d_res - 10'd1;
+            d_live = d_live + 10'd1;
             if (iss_q) d_q   = d_q   + 10'd1;
             else       d_iss = d_iss + 10'd1;
         end
         if (rel_valid && st[rel_tag] == `REQ_ST_RESERVED) d_res = d_res - 10'd1;
         if (up_valid && up_retire) leave(old_up);
         if (sw_expire) begin d_iss = d_iss - 10'd1; d_q = d_q + 10'd1; end
-        else if (sw_drain) d_q = d_q - 10'd1;
+        else if (sw_drain) begin d_q = d_q - 10'd1; d_live = d_live - 10'd1; end
     end
     always @(posedge clk)
         if (rst) begin
-            n_reserved <= 9'd0; n_issued <= 9'd0; n_quarantined <= 9'd0;
+            n_reserved <= 9'd0; n_issued <= 9'd0; n_quarantined <= 9'd0; n_live <= 9'd0;
         end else begin
             n_reserved    <= n_reserved    + d_res[8:0];
             n_issued      <= flr ? 9'd0 : n_issued + d_iss[8:0];
-            n_quarantined <= n_quarantined + d_q[8:0] + (flr ? n_issued + d_iss[8:0] : 9'd0);
+            n_quarantined <= flr ? n_live + d_live[8:0] : n_quarantined + d_q[8:0];
+            n_live        <= n_live        + d_live[8:0];
         end
     assign trn_pending = (n_reserved != 9'd0) || (n_issued != 9'd0);
     // synthesis translate_off
     always @(posedge clk)
         if (!rst && adm_valid && st[adm_tag] !== `REQ_ST_FREE)
             $error("req_table: admission of non-FREE tag %0d (state %0d)", adm_tag, st[adm_tag]);
+    always @(posedge clk)
+        if (!rst && n_live !== n_issued + n_quarantined)
+            $error("req_table: n_live %0d != n_issued %0d + n_quarantined %0d", n_live, n_issued, n_quarantined);
     // synthesis translate_on
 endmodule
