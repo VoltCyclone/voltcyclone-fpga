@@ -308,11 +308,6 @@ module pcileech_fifo #(
     
     always @ ( posedge clk )
          _pcie_core_config <= rw[207:128];
-    assign dpcie.pcie_cfg_subsys_vend_id                = _pcie_core_config[0+:16];
-    assign dpcie.pcie_cfg_subsys_id                     = _pcie_core_config[16+:16];
-    assign dpcie.pcie_cfg_vend_id                       = _pcie_core_config[32+:16];
-    assign dpcie.pcie_cfg_dev_id                        = _pcie_core_config[48+:16];
-    assign dpcie.pcie_cfg_rev_id                        = _pcie_core_config[64+:8];
     assign dpcie.pcie_rst_core                          = _pcie_core_config[72];
     assign dpcie.pcie_rst_subsys                        = _pcie_core_config[73];
     assign dshadow2fifo.cfgtlp_en                       = _pcie_core_config[74];
