@@ -242,6 +242,29 @@ module pcileech_pcie_a7 #(
     wire [15:0]  req_err_reported_count, req_err_suppressed_count, req_err_overflow_count;
     wire         req_err_overflow;
 
+    // Requester Device Control inputs pass through one clk_pcie register.
+    // The PCIE_2_1 hard block drives these pins with about 1.3 ns clock-to-out
+    // and a fanout above 600, and the combinational allocator/gate/table cone
+    // failed routed setup at n_quarantined (-1.551 ns).
+    // The lag adds one cycle to the gate's existing pipeline latency. A request
+    // admitted in that cycle matches one admitted a cycle earlier and still
+    // queued. Device Control 2 changes may apply the old or new value to
+    // pending requests.
+    // bme stays live, so a cleared Bus Master Enable stops admission with no
+    // added delay. Reset, FLR and hot reset clear BME, which also covers the
+    // cycle where these registers catch up.
+    // No reset: each register follows its core output.
+    reg       req_ext_tag_en;
+    reg [2:0] req_mrrs_code;
+    reg [3:0] req_ctl_code;
+    reg       req_ctl_disable;
+    always @ ( posedge clk_pcie ) begin
+        req_ext_tag_en  <= ctx.cfg_dcommand[8];
+        req_mrrs_code   <= ctx.cfg_dcommand[14:12];
+        req_ctl_code    <= ctx.cfg_dcommand2[3:0];
+        req_ctl_disable <= ctx.cfg_dcommand2[4];
+    end
+
     wire [7:0] req_fc_nph;
     wire [8:0] req_np_cap;
     pcileech_req_np_cap i_pcileech_req_np_cap (
@@ -256,8 +279,8 @@ module pcileech_pcie_a7 #(
         .tlps_out                   ( tlps_tx_gated.source      ),
         .live_rid                   ( req_live_rid              ),
         .bme                        ( ctx.cfg_command[2]        ),
-        .mrrs_code                  ( ctx.cfg_dcommand[14:12]   ),
-        .ext_tag_en                 ( ctx.cfg_dcommand[8]       ),
+        .mrrs_code                  ( req_mrrs_code             ),
+        .ext_tag_en                 ( req_ext_tag_en            ),
         .free                       ( req_free                  ),
         .n_reserved                 ( req_n_reserved            ),
         .n_issued                   ( req_n_issued              ),
@@ -293,8 +316,8 @@ module pcileech_pcie_a7 #(
         .clk                        ( clk_pcie                  ),
         .rst                        ( rst_req                   ),
         .flr                        ( ctx.cfg_received_func_lvl_rst ),
-        .ctl_code                   ( ctx.cfg_dcommand2[3:0]    ),
-        .ctl_disable                ( ctx.cfg_dcommand2[4]      ),
+        .ctl_code                   ( req_ctl_code              ),
+        .ctl_disable                ( req_ctl_disable           ),
         .adm_valid                  ( req_adm_valid             ),
         .adm_tag                    ( req_adm_tag               ),
         .adm_host_tag               ( req_adm_host_tag          ),

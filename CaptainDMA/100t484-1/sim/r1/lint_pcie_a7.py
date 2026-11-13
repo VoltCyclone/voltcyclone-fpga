@@ -105,11 +105,45 @@ def table_clock(node):
     return found
 
 
+# Requester Device Control ports that must come from one clk_pcie register
+# (routed setup failed when they were wired to the core pins directly), and
+# the one that must stay live.
+REGISTERED_CFG = {
+    "ext_tag_en": ("req_ext_tag_en", "ctx.cfg_dcommand[8]"),
+    "mrrs_code": ("req_mrrs_code", "ctx.cfg_dcommand[14:12]"),
+    "ctl_code": ("req_ctl_code", "ctx.cfg_dcommand2[3:0]"),
+    "ctl_disable": ("req_ctl_disable", "ctx.cfg_dcommand2[4]"),
+}
+LIVE_CFG = {"bme": "ctx.cfg_command[2]"}
+
+
+def config_registers(text: str) -> list:
+    """Return wiring errors for the requester config inputs (empty when correct)."""
+    errors = []
+    body = "\n".join(re.findall(
+        r"always\s*@\s*\(\s*posedge\s+clk_pcie\s*\)\s*begin(.*?)\bend\b", text, re.S))
+    for port, (reg, source) in REGISTERED_CFG.items():
+        bound = re.findall(r"\." + port + r"\s*\(\s*([^)]*?)\s*\)", text)
+        if bound != [reg]:
+            errors.append(f"{port} bound to {bound}, expected [{reg}]")
+        if not re.search(re.escape(reg) + r"\s*<=\s*" + re.escape(source) + r"\s*;", body):
+            errors.append(f"{reg} is not registered from {source} on posedge clk_pcie")
+    for port, source in LIVE_CFG.items():
+        bound = re.findall(r"\." + port + r"\s*\(\s*([^)]*?)\s*\)", text)
+        if bound != [source]:
+            errors.append(f"{port} bound to {bound}, expected live [{source}]")
+    return errors
+
+
 def main() -> int:
+    wiring = config_registers((SRC / "pcileech_pcie_a7.sv").read_text())
+    for error in wiring:
+        print(f"A7_CFG_REG_FAIL {error}")
+    print(f"A7_CFG_REG_{'FAIL' if wiring else 'PASS'}")
     if not shutil.which("verilator"):
         print("A7_LINT_SKIP verilator not installed")
         return 2
-    failures = 0
+    failures = len(wiring)
     with tempfile.TemporaryDirectory(prefix="a7-lint-") as tmp:
         stub = Path(tmp) / "stubs.sv"
         stub.write_text(stubs())

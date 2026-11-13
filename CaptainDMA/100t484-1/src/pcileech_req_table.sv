@@ -36,8 +36,8 @@ module pcileech_req_table #(
     input           clk,
     input           rst,            // link session abort: every entry -> FREE
     input           flr,            // cfg_received_func_lvl_rst, one-cycle event
-    input  [3:0]    ctl_code,       // live cfg_dcommand2[3:0]
-    input           ctl_disable,    // live cfg_dcommand2[4]
+    input  [3:0]    ctl_code,       // cfg_dcommand2[3:0], one-cycle register in pcileech_pcie_a7
+    input           ctl_disable,    // cfg_dcommand2[4], one-cycle register in pcileech_pcie_a7
     // admit (req_gate): FREE -> RESERVED
     input           adm_valid,
     input  [7:0]    adm_tag,

@@ -7,8 +7,9 @@
 // Offers the first FREE tag at or after a pointer, wrapping within the live tag range
 // (0-31, or 0-255 with Extended Tag Field Enable). The pointer moves past each tag
 // taken, so a just-released tag is the last to be reused, which maximises separation
-// from any straggling completion. The range is re-read every cycle: clearing the
-// enable only restricts new offers, it never frees tags already in use.
+// from any straggling completion. The range is re-read every cycle from the enable
+// registered in pcileech_pcie_a7. Clearing the enable only restricts new offers,
+// and it never frees tags already in use.
 //
 `timescale 1ns / 1ps
 
