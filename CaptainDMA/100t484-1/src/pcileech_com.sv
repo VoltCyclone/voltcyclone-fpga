@@ -64,7 +64,9 @@ module pcileech_com #(
     // "virtual" COM-core initial transmitted values below.
     // ----------------------------------------------------------------------------
     
-    bit [63:0] initial_rx [5] = '{
+    localparam integer INITIAL_RX_START = 16;
+    localparam integer INITIAL_RX_WORDS = 5;
+    bit [63:0] initial_rx [INITIAL_RX_WORDS] = '{
             // Modify data below to set own actions - examples:
             // - send some initial TLP on core startup.
             // - set initial VID/PID if PCIe core has been modified.
@@ -96,7 +98,17 @@ module pcileech_com #(
 `ifdef ENABLE_FT601
     generate if ( FT601_PHY_MMCM ) begin : g_ft601_mmcm_clk
         wire phy_not_ready;
-        pcileech_ft601_clk i_ft601_clk (
+        // Every rst resets the MMCM, and certification then needs at least
+        // FT601_STABLE_CYCLES SYS edges, so COM RX data cannot become visible
+        // while the initial_rx boot words are muxed onto dfifo.com_dout.
+        localparam integer FT601_STABLE_CYCLES = 64;
+`ifndef SYNTHESIS
+        initial if (FT601_STABLE_CYCLES <= INITIAL_RX_START + INITIAL_RX_WORDS)
+            $fatal(1, "COM boot words can overlap COM RX after rst");
+`endif
+        pcileech_ft601_clk #(
+            .STABLE_CYCLES      ( FT601_STABLE_CYCLES   )
+        ) i_ft601_clk (
             .clk                ( clk                   ),
             .rst                ( rst                   ),
             .ft601_clk          ( clk_com               ),
@@ -144,16 +156,52 @@ module pcileech_com #(
     always @ ( posedge clk_c )
         tickcount64_com <= rst_com ? 0 : tickcount64_com + 1;
 
-    // RX clock-crossing FIFO reset: held for two clk_c ticks after rst_com
-    // releases. A flop with rst_com as asynchronous preset, so the FIFO's
-    // asynchronous rst pin is never driven by a LUT and assertion still does
-    // not wait for clk_c.
-    reg rst_comrx_fifo = 1'b1;
+    // Keep traffic quarantined independently of the FIFO's reset pin. After
+    // controller-certified clocks return, replay a distinct FIFO reset edge.
+    // Both high and low phases count six full periods in BOTH clock domains;
+    // six low periods is conservative project policy (PG057 does not specify
+    // the endpoints of its six-clock gap). Physical clock loss can precede
+    // controller detection; interrupted transactions earn no completion credit.
+    wire rst_comrx_fifo, rst_comtx_fifo;
+    wire fifo_run_sys, fifo_run_com;
+`ifdef ENABLE_FT601
+    localparam integer USE_FIFO_REPLAY = FT601_PHY_MMCM;
+`else
+    localparam integer USE_FIFO_REPLAY = 0;
+`endif
+    generate if ( USE_FIFO_REPLAY ) begin : g_fifo_replay
+        wire fifo_rst, done_sys, done_com;
+        pcileech_com_fifo_reset #(.COUNT_CYCLES(6)) i_reset (
+            .clk(clk), .clk_com(clk_c), .unavailable(rst || com_arst),
+            .rst_com(rst_com), .fifo_rst(fifo_rst), .done(done_sys)
+        );
+        xpm_cdc_single #(
+            .DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .SRC_INPUT_REG(0)
+        ) i_done_com (
+            .src_clk(clk), .src_in(done_sys),
+            .dest_clk(clk_c), .dest_out(done_com)
+        );
+        assign rst_comrx_fifo = fifo_rst;
+        assign rst_comtx_fifo = fifo_rst;
+        assign fifo_run_sys = done_sys && !rst && !com_arst;
+        // Register the COM qualification locally, with immediate abort. This
+        // keeps reset/quarantine terms off the normal backpressure path.
+        reg run_com = 1'b0;
+        always @(posedge clk_c or posedge rst_com)
+            if (rst_com) run_com <= 1'b0;
+            else run_com <= done_com;
+        assign fifo_run_com = run_com;
+        // rx_ready and the stale-acknowledgement argument rely on every rst
+        // raising com_arst (and so rst_com) on the next SYS edge; the
+        // pcileech_ft601_clk controller guarantees it, and the sequence bench
+        // asserts it (COM_RST_WITHOUT_ARST).
+    end else begin : g_fifo_legacy
+    reg rx_reset = 1'b1;
     always @ ( posedge clk_c or posedge rst_com )
         if ( rst_com )
-            rst_comrx_fifo <= 1'b1;
+            rx_reset <= 1'b1;
         else
-            rst_comrx_fifo <= (tickcount64_com < 2);
+            rx_reset <= (tickcount64_com < 2);
 
     // TX clock-crossing FIFO reset (wr_clk = clk, rd_clk = clk_c): a clk
     // register held from rst until the clk_c side has itself left reset.
@@ -168,16 +216,23 @@ module pcileech_com #(
         .INIT_SYNC_FF       ( 0                     ),
         .RST_ACTIVE_HIGH    ( 1                     )
     ) i_cdc_rst_comtx_clk (
-        .src_arst           ( rst_comrx_fifo        ),
+        .src_arst           ( rx_reset              ),
         .dest_clk           ( clk                   ),
         .dest_arst          ( rst_comrx_fifo_clk    )
     );
-    reg rst_comtx_fifo = 1'b1;
+    reg tx_reset = 1'b1;
     always @ ( posedge clk )
-        rst_comtx_fifo <= rst || rst_comrx_fifo_clk;
+        tx_reset <= rst || rst_comrx_fifo_clk;
 
-    wire        initial_rx_valid    = ~rst & (tickcount64 >= 16) & (tickcount64 < $size(initial_rx) + 16);
-    wire [63:0] initial_rx_data     = initial_rx_valid ? initial_rx[tickcount64 - 16] : 64'h0;
+        assign rst_comrx_fifo = rx_reset;
+        assign rst_comtx_fifo = tx_reset;
+        assign fifo_run_sys = 1'b1;
+        assign fifo_run_com = 1'b1;
+    end endgenerate
+    wire rst_stream_com = rst_com || !fifo_run_com;
+
+    wire        initial_rx_valid    = ~rst & (tickcount64 >= INITIAL_RX_START) & (tickcount64 < INITIAL_RX_WORDS + INITIAL_RX_START);
+    wire [63:0] initial_rx_data     = initial_rx_valid ? initial_rx[tickcount64 - INITIAL_RX_START] : 64'h0;
     
     // ----------------------------------------------------------------------------
     // COMMUNICATION CORE RX DATA BELOW:
@@ -196,7 +251,7 @@ module pcileech_com #(
     wire        com_rx_full;
    
     always @ ( posedge clk_c )
-        if ( rst_com | (~com_rx_valid32 & com_rx_valid64_dw[0] & com_rx_valid64_dw[1]) )
+        if ( rst_stream_com | (~com_rx_valid32 & com_rx_valid64_dw[0] & com_rx_valid64_dw[1]) )
             com_rx_valid64_dw <= 2'b00;
         else if ( com_rx_valid32 && (com_rx_data32 == 32'h66665555) && (com_rx_data64[31:0] == 32'h66665555) )
             // resync logic to allow the host to send resync data that will
@@ -214,8 +269,8 @@ module pcileech_com #(
         .wr_clk         ( clk_c                     ),
         .rd_clk         ( clk                       ),
         .din            ( com_rx_data64             ),
-        .wr_en          ( com_rx_valid64            ),
-        .rd_en          ( 1'b1                      ),
+        .wr_en          ( com_rx_valid64 && fifo_run_com ),
+        .rd_en          ( fifo_run_sys              ),
         .dout           ( com_rx_dout               ),
         .full           ( com_rx_full                ),
         .empty          (                           ),
@@ -223,7 +278,7 @@ module pcileech_com #(
     );
     
     assign dfifo.com_dout = initial_rx_valid ? initial_rx_data : com_rx_dout;
-    assign dfifo.com_dout_valid = initial_rx_valid | com_rx_valid;
+    assign dfifo.com_dout_valid = initial_rx_valid | (com_rx_valid && fifo_run_sys);
     
     // ----------------------------------------------------------------------------
     // COMMUNICATION CORE TX DATA BELOW:
@@ -243,15 +298,15 @@ module pcileech_com #(
     wire        out_buffer1_almost_full;
 
     // No writes are offered while the TX FIFO is still held in reset.
-    assign dfifo.com_din_ready  = ~out_buffer1_almost_full & ~rst_comtx_fifo;
+    assign dfifo.com_din_ready  = ~out_buffer1_almost_full & ~rst_comtx_fifo & fifo_run_sys;
     assign led_state_txdata     = com_tx_prog_full ^ led_state_invert;
     
     fifo_32_32_clk1_comtx i_fifo_32_32_clk2_comtx(
         .clk            ( clk_c                     ),
-        .srst           ( rst_com                   ),
+        .srst           ( rst_stream_com            ),
         .din            ( com_tx_data               ),
-        .wr_en          ( com_tx_wr_en              ),
-        .rd_en          ( core_din_ready            ),
+        .wr_en          ( com_tx_wr_en && fifo_run_com ),
+        .rd_en          ( core_din_ready && fifo_run_com ),
         .dout           ( core_din                  ),
         .full           (                           ),
         .almost_full    ( com_tx_almost_full        ),
@@ -265,8 +320,8 @@ module pcileech_com #(
         .wr_clk         ( clk                       ),
         .rst            ( rst_comtx_fifo            ),
         .din            ( dfifo.com_din             ),
-        .wr_en          ( dfifo.com_din_wr_en       ),
-        .rd_en          ( ~com_tx_almost_full       ),
+        .wr_en          ( dfifo.com_din_wr_en && fifo_run_sys ),
+        .rd_en          ( ~com_tx_almost_full && fifo_run_com ),
         .dout           ( com_tx_data               ),
         .full           (                           ),
         .almost_full    ( out_buffer1_almost_full   ),
@@ -288,7 +343,9 @@ module pcileech_com #(
         always @ ( posedge clk_c or posedge rst_com )
             if ( rst_com )
                 rx_ready <= 1'b0;
-            else if ( !rst_comrx_fifo && !com_rx_full )
+            // fifo_run_com is the synchronized transaction completion; the
+            // native FIFO reset is SYS-domain and must not enter this D path.
+            else if ( fifo_run_com && !com_rx_full )
                 rx_ready <= 1'b1;
         wire rst_phy = rst_com || !rx_ready;
 
@@ -377,4 +434,98 @@ module pcileech_com #(
     );
 `endif /* ENABLE_ETH */
 
+endmodule
+
+// Four-phase request/acknowledge counting handshake. Output reset is a single
+// SYS register Q shared by both async FIFOs; it freezes during clock loss.
+// After the fresh reset is released, one more counted phase holds the FIFO
+// enables off for COUNT_CYCLES full periods in BOTH clocks before done, so the
+// FIFOs' internal reset synchronizers finish without relying on their flags.
+module pcileech_com_fifo_reset #(
+    parameter integer COUNT_CYCLES = 6
+) (
+    input clk, clk_com, unavailable, rst_com,
+    output reg fifo_rst = 1'b1,
+    output reg done = 1'b0
+);
+    localparam integer CW = $clog2(COUNT_CYCLES + 1);
+    localparam [3:0] WAIT_CLOCK=0, OLD_HIGH=1, OLD_ACK0=2,
+        LOW_GAP=3, GAP_ACK0=4, NEW_HIGH=5, NEW_ACK0=6, READY=7,
+        POST_LOW=8, POST_ACK0=9;
+    reg [3:0] state = WAIT_CLOCK;
+    reg request = 1'b0;
+    reg [CW-1:0] sys_count = 0, com_count = 0;
+    reg ack_com = 1'b0;
+    wire request_com, ack_sys;
+    xpm_cdc_single #(
+        .DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .SRC_INPUT_REG(0)
+    ) i_request (
+        .src_clk(clk), .src_in(request),
+        .dest_clk(clk_com), .dest_out(request_com)
+    );
+    xpm_cdc_single #(
+        .DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .SRC_INPUT_REG(0)
+    ) i_ack (
+        .src_clk(clk_com), .src_in(ack_com),
+        .dest_clk(clk), .dest_out(ack_sys)
+    );
+    // Starting at zero and testing before incrementing counts full periods,
+    // rather than counting the first observed request edge as a period.
+    always @(posedge clk_com or posedge rst_com)
+        if (rst_com) begin com_count <= 0; ack_com <= 1'b0; end
+        else if (!request_com) begin com_count <= 0; ack_com <= 1'b0; end
+        else if (com_count == CW'(COUNT_CYCLES)) ack_com <= 1'b1;
+        else com_count <= com_count + 1'b1;
+
+    always @(posedge clk)
+        if (unavailable) begin
+            state <= WAIT_CLOCK;
+            request <= 1'b0;
+            done <= 1'b0;
+            sys_count <= 0;
+            // Hold fifo_rst: never shorten an interrupted high/low phase.
+        end else begin
+            if (request && sys_count < CW'(COUNT_CYCLES))
+                sys_count <= sys_count + 1'b1;
+            case (state)
+                WAIT_CLOCK: if (!ack_sys) begin
+                    request <= 1'b1; sys_count <= 0;
+                    state <= fifo_rst ? OLD_HIGH : LOW_GAP;
+                end
+                OLD_HIGH: if (ack_sys && sys_count == CW'(COUNT_CYCLES)) begin
+                    request <= 1'b0; state <= OLD_ACK0;
+                end
+                OLD_ACK0: if (!ack_sys) begin
+                    fifo_rst <= 1'b0;
+                    request <= 1'b1; sys_count <= 0; state <= LOW_GAP;
+                end
+                LOW_GAP: if (ack_sys && sys_count == CW'(COUNT_CYCLES)) begin
+                    request <= 1'b0; state <= GAP_ACK0;
+                end
+                GAP_ACK0: if (!ack_sys) begin
+                    fifo_rst <= 1'b1;
+                    request <= 1'b1; sys_count <= 0; state <= NEW_HIGH;
+                end
+                NEW_HIGH: if (ack_sys && sys_count == CW'(COUNT_CYCLES)) begin
+                    request <= 1'b0; state <= NEW_ACK0;
+                end
+                NEW_ACK0: if (!ack_sys) begin
+                    fifo_rst <= 1'b0;
+                    request <= 1'b1; sys_count <= 0; state <= POST_LOW;
+                end
+                POST_LOW: if (ack_sys && sys_count == CW'(COUNT_CYCLES)) begin
+                    request <= 1'b0; state <= POST_ACK0;
+                end
+                POST_ACK0: if (!ack_sys) begin
+                    done <= 1'b1; state <= READY;
+                end
+                READY: begin end
+                default: begin
+                    state <= WAIT_CLOCK; request <= 1'b0; done <= 1'b0;
+                end
+            endcase
+        end
+`ifndef SYNTHESIS
+    initial if (COUNT_CYCLES < 6) $fatal(1, "COM reset policy requires >=6 cycles");
+`endif
 endmodule

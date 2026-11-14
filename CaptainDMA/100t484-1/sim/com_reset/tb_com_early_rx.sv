@@ -78,6 +78,8 @@ module tb_com_early_rx;
     end
     always @(posedge e)
         if (score && !rxf_n && !rd_n) begin
+            if (!dut.fifo_run_com || !dut.g_ft601_phy.rx_ready)
+                $fatal(1, "COM_EARLY_PIN_NOT_READY epoch=%0d", epoch);
             if (physical_reads % 32 == 0)
                 $display("COM_EARLY_FIRST_PIN epoch=%0d time=%0t", epoch, $realtime);
             physical_reads = physical_reads + 1;

@@ -15,6 +15,7 @@ module tb_com_vendor;
     real sys_half = 5.0, com_half = 5.0, phase = 1.3;
     integer scenario = 0;
     integer rx_seen = 0, tx_seen = 0, episodes = 0;
+    integer held_rx_writes = 0;
     bit score = 0;
     reg [63:0] rx_expected[$];
     reg [31:0] tx_expected[$];
@@ -79,6 +80,10 @@ module tb_com_vendor;
         end
     end
 
+    always @(posedge cclk)
+        if (!sys_run && dut.i_fifo_64_64_clk2_comrx.wr_en && !dut.com_rx_full)
+            held_rx_writes = held_rx_writes + 1;
+
     task automatic rx_word(input reg [31:0] word_data);
         @(negedge cclk); rx_data = word_data; rx_valid = 1;
         @(negedge cclk); rx_valid = 0;
@@ -118,6 +123,7 @@ module tb_com_vendor;
         $display("COM_HEALTHY epoch=%0d rx=%0d tx=%0d", epoch, rx_seen, tx_seen);
     endtask
     task automatic reset_episode(input integer kind);
+        integer before_writes;
         // Queue old-session TX words and leave one unpaired RX word. For
         // stopped SYS also queue an old RX pair so an omitted FIFO reset
         // must expose stale data when SYS resumes.
@@ -126,7 +132,13 @@ module tb_com_vendor;
         rx_word(32'hB4000000 + episodes);
         if (kind == 2) begin
             @(negedge clk); sys_run = 0;
+            before_writes = held_rx_writes;
             rx_word(32'hB5000000 + episodes);
+            // Ensure the stale pair reaches FIFO RAM before quarantine. A
+            // pending packer pair alone is now correctly suppressed on abort.
+            repeat (8) @(negedge cclk);
+            if (held_rx_writes != before_writes + 1)
+                $fatal(1, "COM_RESET_SETUP_NO_QUEUED_PAIR");
         end
         if (kind == 1) begin
             @(negedge cclk); com_run = 0;
