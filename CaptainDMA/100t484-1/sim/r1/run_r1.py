@@ -22,6 +22,7 @@ BENCHES = {
     "tb_req_np_cap": ["pcileech_req_np_cap.sv"],
     "tb_req_classify": ["pcileech_req_classify.sv"],
     "tb_req_tagalloc": ["pcileech_req_tagalloc.sv"],
+    "tb_req_tagalloc_spec": ["pcileech_req_tagalloc.sv"],
     "tb_req_cto_limits": ["pcileech_req_cto_limits.sv"],
     "tb_req_table": ["pcileech_req_table.sv", "pcileech_req_cto_limits.sv"],
     "tb_req_table_equiv": ["pcileech_req_table.sv", "pcileech_req_cto_limits.sv"],
@@ -57,6 +58,7 @@ BENCHES = {
 SIM_MODELS = {
     "tb_req_status": ["xpm_cdc_handshake_model.sv"],
     "tb_req_table_equiv": ["req_table_reference.sv"],
+    "tb_req_tagalloc_spec": ["tagalloc_registered_spec.sv"],
 }
 LINT_STUBS = {"pcileech_req_status": ["xpm_cdc_handshake_bbox.sv"]}
 

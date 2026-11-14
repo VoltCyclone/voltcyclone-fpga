@@ -17,7 +17,8 @@ module tb_req_tagalloc;
     task expect_offer;
         input [8*64-1:0] name; input want_avail; input [7:0] want_tag;
         begin
-            #1;
+            // The offer is registered: let one edge absorb the last free/range change.
+            @(posedge clk); #1;
             checks = checks + 1;
             if (avail !== want_avail || (want_avail && tag !== want_tag)) begin
                 errors = errors + 1;

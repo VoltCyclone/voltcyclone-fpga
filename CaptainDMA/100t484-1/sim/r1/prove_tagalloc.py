@@ -1,114 +1,151 @@
-#!/usr/bin/env python3
-"""Prove the allocator equivalent to its frozen pre-optimization baseline.
+"""Prove the registered-offer tag allocator (SymbiYosys).
 
-Yosys proves matched state/outputs without free-vector or pointer/range
-assumptions. Icarus separately compares four-state offers for every binary
-pointer/range, sparse/random vectors and X/Z inputs. Existing tb_req_tagalloc
-covers reset/take/availability and range transitions. --candidate permits
-negative controls on temporary copies without rewriting the working RTL.
+1. Safety (k-induction, tagalloc_safety.sv): with the table's only FREE-removal
+   being the allocator's take, an offered tag is FREE whenever it is visible or
+   taken. Port-level assertions only (Yosys does not resolve hierarchical
+   references here; they would become unconstrained wires).
+2. Equivalence (k-induction, bitwuzla): the RTL matches tagalloc_registered_spec.sv,
+   a plain modular-scan specification with the same registers, on every
+   register and port. The miter exposes both modules' flip-flops as ports.
+3. Negative controls: candidate mutants that must fail (safety prove, or a
+   depth-5 equivalence BMC), so the proofs are known to be able to fail.
+
+``--candidate PATH`` checks a temporary copy instead of the working RTL.
+Requires sby, yosys, yices and bitwuzla (oss-cad-suite).
 """
 
 import argparse
-import hashlib
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 
 HERE = Path(__file__).resolve().parent
-SRC = HERE.parents[1] / "src"
-BASELINE_SHA256 = "8face52afeeaf81f163340f39c6bde3335cf3ed5420d1d81aeec8a2e95e438de"
+SRC = HERE.parents[1] / "src" / "pcileech_req_tagalloc.sv"
+
+SAFETY = """[options]
+mode {mode}
+depth {depth}
+
+[engines]
+smtbmc yices
+
+[script]
+read_verilog -sv -formal pcileech_req_tagalloc.sv
+read_verilog -sv -formal tagalloc_safety.sv
+prep -top tagalloc_safety
+
+[files]
+pcileech_req_tagalloc.sv
+tagalloc_safety.sv
+"""
+
+EQUIV = """[options]
+mode {mode}
+depth {depth}
+
+[engines]
+smtbmc bitwuzla
+
+[script]
+read_verilog -sv gold.sv
+read_verilog -sv gate.sv
+proc
+opt_clean
+expose -dff gold gate
+miter -equiv -flatten -make_outputs -ignore_gold_x gold gate miter
+read_verilog -sv -formal tagalloc_equiv_top.sv
+hierarchy -top equiv_top
+proc
+flatten
+
+[files]
+gold.sv
+gate.sv
+tagalloc_equiv_top.sv
+"""
+
+# (name, old, new, which proof must fail)
+MUTANTS = [
+    (
+        "offer_not_excluded_on_take",
+        "assign cand_take[index]  = cand[index] & (8'(index) != offer);",
+        "assign cand_take[index]  = cand[index];",
+        "safety",
+    ),
+    (
+        "keep_offer_after_take",
+        "{offer_ok, offer} <= next_take;",
+        "{offer_ok, offer} <= next_keep;",
+        "safety",
+    ),
+    ("pointer_frozen", "ptr <= offer + 8'd1;", "ptr <= ptr;", "equiv"),
+    (
+        "range_not_reapplied",
+        "assign avail = offer_ok && (ext_tag_en || offer < 8'd32);",
+        "assign avail = offer_ok;",
+        "equiv",
+    ),
+]
 
 
-def run(argv, timeout=180):
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    if result.returncode:
-        raise RuntimeError(
-            "command failed: " + " ".join(argv) + "\n" + result.stdout + result.stderr
-        )
-    return result.stdout + result.stderr
+def sby(workdir, name, config, rtl):
+    work = workdir / name
+    work.mkdir()
+    shutil.copyfile(rtl, work / "pcileech_req_tagalloc.sv")
+    shutil.copyfile(HERE / "tagalloc_safety.sv", work / "tagalloc_safety.sv")
+    shutil.copyfile(HERE / "tagalloc_equiv_top.sv", work / "tagalloc_equiv_top.sv")
+    (work / "gold.sv").write_text(
+        (HERE / "tagalloc_registered_spec.sv")
+        .read_text()
+        .replace("module req_tagalloc_spec (", "module gold (", 1)
+    )
+    (work / "gate.sv").write_text(
+        Path(rtl).read_text().replace("module pcileech_req_tagalloc (", "module gate (", 1)
+    )
+    (work / "proof.sby").write_text(config)
+    result = subprocess.run(
+        ["sby", "-f", "proof.sby"], cwd=work, capture_output=True, text=True, timeout=3600
+    )
+    done = [l for l in result.stdout.splitlines() if "DONE" in l]
+    return result.returncode == 0, (done[-1] if done else result.stdout[-400:])
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--candidate", type=Path, default=SRC / "pcileech_req_tagalloc.sv"
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--candidate", type=Path, default=SRC)
     args = parser.parse_args()
-    candidate = args.candidate.read_bytes()
-    candidate_sha256 = hashlib.sha256(candidate).hexdigest()
-    reference = (HERE / "tagalloc_reference.sv").read_text()
-    original = reference.replace(
-        "module req_tagalloc_reference (", "module pcileech_req_tagalloc (", 1
-    )
-    if hashlib.sha256(original.encode()).hexdigest() != BASELINE_SHA256:
-        raise RuntimeError("Frozen allocator reference changed")
-    with tempfile.TemporaryDirectory(prefix="tagalloc-equiv-") as scratch:
+    rtl = args.candidate.resolve()
+    with tempfile.TemporaryDirectory(prefix="tagalloc-proof-") as scratch:
         root = Path(scratch)
-        candidate_source = root / "candidate.sv"
-        candidate_source.write_bytes(candidate)
-        reference_source = root / "reference.sv"
-        reference_source.write_text(reference)
-        gold = root / "gold.sv"
-        gate = root / "gate.sv"
-        gold.write_text(
-            reference.replace("module req_tagalloc_reference (", "module gold (", 1)
-        )
-        gate.write_text(
-            candidate.decode().replace(
-                "module pcileech_req_tagalloc (", "module gate (", 1
+        ok, msg = sby(root, "safety", SAFETY.format(mode="prove", depth=4), rtl)
+        print(("TAGALLOC_SAFETY_PASS " if ok else "TAGALLOC_SAFETY_FAIL ") + msg, flush=True)
+        if not ok:
+            return 1
+        ok, msg = sby(root, "equiv", EQUIV.format(mode="prove", depth=2), rtl)
+        print(("TAGALLOC_EQUIV_PASS " if ok else "TAGALLOC_EQUIV_FAIL ") + msg, flush=True)
+        if not ok:
+            return 1
+        if args.candidate != SRC:
+            return 0
+        original = rtl.read_text()
+        killed = 0
+        for name, old, new, proof in MUTANTS:
+            if original.count(old) != 1:
+                raise RuntimeError(f"stale mutation anchor: {name}")
+            mutant = root / f"{name}.sv"
+            mutant.write_text(original.replace(old, new))
+            config = (
+                SAFETY.format(mode="prove", depth=4)
+                if proof == "safety"
+                else EQUIV.format(mode="bmc", depth=5)
             )
-        )
-        proof = root / "proof.ys"
-        proof.write_text(
-            "read_verilog -sv gold.sv gate.sv\nproc\nopt_clean\n"
-            "equiv_make gold gate equiv\nhierarchy -top equiv\n"
-            "equiv_simple\nequiv_induct -seq 2\nequiv_status -assert\n"
-        )
-        result = subprocess.run(
-            ["yosys", "-Q", "-T", "-s", str(proof)],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        if result.returncode or "Equivalence successfully proven!" not in result.stdout:
-            raise RuntimeError(
-                "Allocator formal equivalence failed\n" + result.stdout + result.stderr
-            )
-        print(
-            "TAGALLOC_FORMAL_EQUIVALENCE_PASS baseline_sha256="
-            + BASELINE_SHA256
-            + " candidate_sha256="
-            + candidate_sha256,
-            flush=True,
-        )
-        for line in result.stdout.splitlines():
-            if "equiv cells" in line or "proven" in line:
-                print(line, flush=True)
-        out = root / "compare.vvp"
-        run(
-            [
-                "iverilog",
-                "-g2012",
-                "-Wall",
-                "-s",
-                "tb_req_tagalloc_equiv",
-                "-o",
-                str(out),
-                str(candidate_source),
-                str(reference_source),
-                str(HERE / "tb_req_tagalloc_equiv.sv"),
-            ]
-        )
-        simulated = run(["vvp", "-n", str(out)])
-        if (
-            "R1_TB_PASS tb_req_tagalloc_equiv" not in simulated
-            or "R1_TB_FAIL" in simulated
-        ):
-            raise RuntimeError("Allocator four-state equivalence failed\n" + simulated)
-        print(simulated.rstrip(), flush=True)
-    print("TAGALLOC_EQUIVALENCE_PASS", flush=True)
+            ok, msg = sby(root, "mut_" + name, config, mutant)
+            killed += not ok
+            print(("KILLED " if not ok else "SURVIVED ") + f"{name} ({proof}): {msg}", flush=True)
+        print(f"TAGALLOC_MUTANTS killed={killed} total={len(MUTANTS)}", flush=True)
+        return 0 if killed == len(MUTANTS) else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

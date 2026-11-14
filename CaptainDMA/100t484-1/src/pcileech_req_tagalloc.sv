@@ -11,6 +11,14 @@
 // registered in pcileech_pcie_a7. Clearing the enable only restricts new offers,
 // and it never frees tags already in use.
 //
+// The offer is registered (timing F1): each cycle computes the next offer for both
+// outcomes from the current free vector — A from the unchanged pointer if nothing is
+// taken, B from just past the current offer with that tag excluded if it is taken —
+// and take only selects between them. A tag freed in cycle n is offerable from n+2
+// instead of n+1. An offered tag is FREE when taken: only admission (take) removes a
+// tag from FREE, and B excludes the tag just taken. The range is applied again at
+// use, so clearing the enable withdraws an out-of-range offer immediately.
+//
 `timescale 1ns / 1ps
 
 module pcileech_req_tagalloc (
@@ -23,19 +31,25 @@ module pcileech_req_tagalloc (
     output [7:0]    tag
 );
     reg  [7:0]   ptr;
+    reg  [7:0]   offer;
+    reg          offer_ok;
 
     wire [255:0] in_range = ext_tag_en ? {256{1'b1}} : {224'h0, 32'hFFFF_FFFF};
     wire [255:0] cand     = free & in_range;
-    // Build each pointer mask bit independently. A shifted 256-bit one minus
-    // one creates a wide carry chain on the admission path; these comparisons
-    // use only the 8-bit pointer and do not change selection or cycle latency.
-    wire [255:0] at_or_after;
+
+    // Round-robin pick: first candidate at or after start, else the lowest. Each mask
+    // bit compares only the 8-bit start, avoiding a 256-bit shifted carry chain.
+    // A (keep): candidates from ptr. B (take): candidates from offer+1 without offer.
+    wire [7:0]   start_take = offer + 8'd1;
+    wire [255:0] cand_take;
+    wire [255:0] after_keep, after_take;
     genvar index;
     generate for (index = 0; index < 256; index = index + 1) begin : g_pointer_mask
-        // At index 255 this is constant for binary pointers, but retaining the
-        // comparison also preserves the old mask's X/Z-pointer propagation.
+        assign cand_take[index]  = cand[index] & (8'(index) != offer);
+        // At index 255 this is constant for binary starts; kept for X propagation.
         /* verilator lint_off CMPCONST */
-        assign at_or_after[index] = cand[index] & (8'(index) >= ptr);
+        assign after_keep[index] = cand[index]      & (8'(index) >= ptr);
+        assign after_take[index] = cand_take[index] & (8'(index) >= start_take);
         /* verilator lint_on CMPCONST */
     end endgenerate
 
@@ -48,16 +62,23 @@ module pcileech_req_tagalloc (
         end
     endfunction
 
-    wire [8:0] hi = lowest(at_or_after);
-    wire [8:0] lo = lowest(cand);
+    wire [8:0] hi_keep = lowest(after_keep);
+    wire [8:0] lo_keep = lowest(cand);
+    wire [8:0] hi_take = lowest(after_take);
+    wire [8:0] lo_take = lowest(cand_take);
+    wire [8:0] next_keep = hi_keep[8] ? hi_keep : lo_keep;
+    wire [8:0] next_take = hi_take[8] ? hi_take : lo_take;
 
-    // Nothing free at or after the pointer wraps to the lowest free tag in range. This
-    // also covers a pointer beyond the range (past 31, or after the enable is cleared).
-    assign avail = lo[8];
-    assign tag   = hi[8] ? hi[7:0] : lo[7:0];
+    assign avail = offer_ok && (ext_tag_en || offer < 8'd32);
+    assign tag   = offer;
 
-    // Move past the tag taken (8-bit wrap at 255).
+    // The pointer moves past the tag taken (8-bit wrap at 255).
     always @(posedge clk)
-        if (rst)                 ptr <= 8'd0;
-        else if (take && avail)  ptr <= tag + 8'd1;
+        if (rst) begin
+            ptr <= 8'd0; offer <= 8'd0; offer_ok <= 1'b0;
+        end else if (take && avail) begin
+            ptr <= offer + 8'd1;
+            {offer_ok, offer} <= next_take;
+        end else
+            {offer_ok, offer} <= next_keep;
 endmodule
