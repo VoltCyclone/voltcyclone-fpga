@@ -33,16 +33,12 @@ real `fifo_134_134_clk2` simulation model, `xpm_cdc` and reset-window logic.
 - Phase B (preloaded FIFO, full-rate drain): prefetch cycles <= reference + 4.
 - Phase C (60 random reset pulses of 1-4 cycles): nothing written after the
   last window is skipped; everything is delivered.
-- Phase D (consumer always ready): the mux output, decoded back into DWs,
-  matches the accepted stream exactly.
+- Phase D: consumer always ready.
 
-Stock `pcileech_mux` output is exact only while `rd_en` stays high: `en`
-lags `rd_en` by one cycle, so around `rd_en` transitions a completed word
-can be lost (`rd_en` falls as it becomes valid) or the buffered word
-repeated (`rd_en` rises while `en` is still low). The bench counts these
-outside phase D (`stock_mux_anomalies`) for both designs at similar rates;
-they are a property of the unchanged mux, not of this change. On the board
-`rd_en` is `com_din_ready`.
+The decoded mux output must match exactly in every phase, and `valid` must
+never be high while `rd_en` is low. The stock mux failed this (see
+`../mux/README.md`); `--mutant stock_mux` swaps the frozen stock mux back in
+as a control and must fail.
 
 ## Running
 
@@ -51,7 +47,7 @@ they are a property of the unchanged mux, not of this change. On the board
 python3 sim/dst_fifo/run_dst_mux.py --vivado "$XILINX_VIVADO" --board . \
   --generated-ip /path/to/project.gen/sources_1/ip --out /path/to/new-run
 # Mutants (each must fail for its stated reason):
-for m in no_pull_gate deep_prefetch no_flush no_rst_out_gate no_inflight_count; do
+for m in no_pull_gate deep_prefetch no_flush no_rst_out_gate no_inflight_count stock_mux; do
   python3 sim/dst_fifo/run_dst_mux.py ... --mutant $m --seeds 2 --out /path/to/mut-$m
 done
 ```

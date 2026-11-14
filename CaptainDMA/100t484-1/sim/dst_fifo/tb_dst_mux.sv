@@ -133,20 +133,18 @@ module tb_dst_mux;
     // ---------------- delivered streams (clk_sys) ----------------
     // Primary: the dfifo -> mux boundary. A lane is accepted when the mux's
     // write enable `en` (rd_en delayed one cycle) is high.
-    // Secondary: the mux output, decoded back into DWs and matched against
-    // the accepted stream. Stock pcileech_mux output is exact only while
-    // rd_en stays high: `en` lags rd_en by a cycle, so around rd_en
-    // transitions a completed word can be lost (rd_en falls as it becomes
-    // valid) or the buffered word repeated (rd_en rises while en is still
-    // low). Outside phase D such anomalies are classified (mux_drop/mux_rep)
-    // as evidence, not errors; in phase D (rd_en held high) the output must
-    // match exactly.
+    // Secondary: the mux output, decoded back into DWs, must match the
+    // accepted stream exactly in every phase, and valid must never be high
+    // while rd_en is low. (The stock mux, before its output-queue fix, lost or
+    // repeated words around rd_en transitions; with OUT_EXACT=0 such anomalies
+    // are classified as mux_drop/mux_rep instead of failing, for comparison.)
     integer delivered [2] = '{0, 0};
     integer skipped   [2] = '{0, 0};
     integer last_skip [2] = '{-1, -1};   // index of the last skipped written DW
     integer mux_drop  [2] = '{0, 0};
     integer mux_rep   [2] = '{0, 0};
-    reg     out_exact = 1'b0;
+    parameter integer OUT_EXACT = 1;
+    reg     out_exact = OUT_EXACT;
     integer an [2] = '{0, 0};      // accepted DWs
     integer op [2] = '{0, 0};      // mux-output pointer into accepted DWs
     reg [33:0] aq [2][QN];
@@ -164,6 +162,9 @@ module tb_dst_mux;
         reg [3:0]  cx;
         reg [31:0] dw;
         for ( d = 0; d < 2; d = d + 1 ) begin
+            if ( mvalid[d] && !mux_rd ) begin
+                $display("DST_MUX_VALID_NOT_READY d=%0d t=%0t", d, $time); errors = errors + 1;
+            end
             // pull contract
             if ( rxv[d] != 4'b0 && !rd_q[d] ) begin
                 $display("DST_PULL_CONTRACT d=%0d t=%0t", d, $time); errors = errors + 1;
@@ -340,11 +341,11 @@ module tb_dst_mux;
             errors = errors + 1;
         end
 
-        // Phase D: consumer always ready -> the stock mux output is exact.
-        $display("PHASE_ABC stock_mux_anomalies drop ref=%0d new=%0d repeat ref=%0d new=%0d",
+        // Phase D: consumer always ready.
+        $display("PHASE_ABC mux_anomalies drop ref=%0d new=%0d repeat ref=%0d new=%0d",
                  mux_drop[0], mux_drop[1], mux_rep[0], mux_rep[1]);
         rd_pct = 100; sys_cycles(4);
-        op[0] = an[0]; op[1] = an[1]; out_exact = 1'b1;
+        if ( !OUT_EXACT ) begin op[0] = an[0]; op[1] = an[1]; out_exact = 1'b1; end
         src_on = 1'b1; gap_pct = 20;
         sys_cycles(8000);
         src_on = 1'b0;

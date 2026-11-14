@@ -40,6 +40,8 @@ MUTANTS = {
         "    assign dfifo.rx_valid[0] = o_valid[0];",
         "DST_STALE",
     ),
+    # Whole-file control: the frozen stock pcileech_mux (sim/mux).
+    "stock_mux": (None, None, "DST_MUX_"),
     "no_inflight_count": (
         "({1'b0, pb_count} + {2'b0, rd_q} <= 3'd2)",
         "({1'b0, pb_count} <= 3'd2)",
@@ -81,7 +83,10 @@ def main() -> None:
         shutil.copy2(HERE / n, src / n)
     model = a.generated_ip / "fifo_134_134_clk2" / "sim" / "fifo_134_134_clk2.v"
     shutil.copy2(model, src / model.name)
-    if a.mutant:
+    if a.mutant == "stock_mux":
+        stock = (HERE.parent / "mux" / "pcileech_mux_stock.sv").read_text()
+        (src / "pcileech_mux.sv").write_text(stock)
+    elif a.mutant:
         old, new, _ = MUTANTS[a.mutant]
         p = src / "pcileech_pcie_tlp_a7.sv"
         t = p.read_text()
