@@ -84,7 +84,6 @@ module pcileech_req_table #(
     // multi-port write mux (an all-flop table is ~42k LUTs on the xc7a100t).
     reg [1:0]   st  [0:255];        // flops: written by admit, issue, update, sweep, reset
     reg         sup [0:255];        // flops: superseded
-    reg         lvt [0:255];        // flops: 1 = remaining/next LA newest in the update bank
     reg         fl  [0:255];        // flops: RESERVED or ISSUED at an FLR since admission
 
     reg [12:0]  meta  [0:255];      // RAM, admit:  {host_tag, tc, attr}
@@ -94,11 +93,21 @@ module pcileech_req_table #(
     reg [W+5:0] issr  [0:255];      // RAM, issue:  {quarantined at issue, issue time, code, disable}
     reg [W-1:0] tqr   [0:255];      // RAM, sweep:  quarantine time
     reg [7:0]   rev   [0:255];      // RAM, admit:  host tag -> newest internal tag
+    // Live-value table as two single-writer 1-bit RAMs: ga ^ gu = 1 when
+    // remaining/next LA is newest in the update bank. Admission copies gu into
+    // ga (XOR 0); a progress update writes ~ga into gu (XOR 1). This replaces a
+    // 256:1 mux over 256 flops on the completion lookup path with two
+    // RAM256X1S reads. Admission targets a FREE tag and updates an
+    // ISSUED/QUARANTINED one, so the two writers never share a tag in a cycle.
+    // No reset is needed: every admission writes ga before the entry can be
+    // looked up as ISSUED or QUARANTINED.
+    reg         ga    [0:255];      // RAM, admit:  live-value bit, admission bank
+    reg         gu    [0:255];      // RAM, update: live-value bit, update bank
 
     integer i;
     initial for (i = 0; i < 256; i = i + 1) begin
         meta[i] = '0; hostc[i] = '0; rem_a[i] = '0; rem_u[i] = '0;
-        issr[i] = '0; tqr[i] = '0; rev[i] = '0;
+        issr[i] = '0; tqr[i] = '0; rev[i] = '0; ga[i] = 1'b0; gu[i] = 1'b0;
     end
 
     genvar g;
@@ -107,7 +116,8 @@ module pcileech_req_table #(
     end endgenerate
 
     wire [12:0] lk_meta = meta[lk_tag];
-    wire [19:0] lk_rem  = lvt[lk_tag] ? rem_u[lk_tag] : rem_a[lk_tag];
+    wire        lk_lvt  = ga[lk_tag] ^ gu[lk_tag];
+    wire [19:0] lk_rem  = lk_lvt ? rem_u[lk_tag] : rem_a[lk_tag];
     assign lk_state      = st[lk_tag];
     assign lk_host_tag   = lk_meta[12:5];
     assign lk_remaining  = lk_rem[19:7];
@@ -139,10 +149,16 @@ module pcileech_req_table #(
     pcileech_req_cto_limits #(.CLK_PCIE_HZ(CLK_PCIE_HZ), .TICK_CYCLES(TICK_CYCLES), .W(W)) i_limits (
         .code(sw_iss[4:1]), .disable_lat(sw_iss[0]), .t_ticks(sw_t), .q_ticks(sw_q));
 
+    // Sweep decisions use registered state only, so the completion lookup and
+    // progress check stay off the per-entry state path. A same-cycle retire of
+    // the swept entry wins: the state update applies it after the sweep, and
+    // the timeout event and counts use the retire-qualified forms.
     wire sw_retired = up_valid && up_retire && (up_tag == sw_idx);
-    wire sw_expire  = (st[sw_idx] == `REQ_ST_ISSUED) && !sw_iss[0] && !ctl_disable &&
-                      (sw_age_iss >= sw_t) && !sw_retired && !flr;   // FLR quarantines silently
-    wire sw_drain   = (st[sw_idx] == `REQ_ST_QUARANTINED) && (sw_age_q >= sw_q) && !sw_retired;
+    wire sw_expire_raw = (st[sw_idx] == `REQ_ST_ISSUED) && !sw_iss[0] && !ctl_disable &&
+                         (sw_age_iss >= sw_t) && !flr;   // FLR quarantines silently
+    wire sw_drain_raw  = (st[sw_idx] == `REQ_ST_QUARANTINED) && (sw_age_q >= sw_q);
+    wire sw_expire  = sw_expire_raw && !sw_retired;
+    wire sw_drain   = sw_drain_raw  && !sw_retired;
 
     // ---- supersede: only the newest holder of a host tag can be unsuperseded ----------------
     // Every older live entry with the same host tag was marked when its successor was
@@ -162,12 +178,17 @@ module pcileech_req_table #(
         hostc[adm_tag]    <= adm_host_tag;
         rem_a[adm_tag]    <= {adm_bc, adm_la};
         rev[adm_host_tag] <= adm_tag;
+        ga[adm_tag]       <= gu[adm_tag];
     end
-    always @(posedge clk) if (up_valid && !up_retire)
+    always @(posedge clk) if (up_valid && !up_retire) begin
         rem_u[up_tag] <= {up_remaining, up_next_la};
+        gu[up_tag]    <= ~ga[up_tag];
+    end
     always @(posedge clk) if (iss_valid && st[iss_tag] == `REQ_ST_RESERVED)
         issr[iss_tag] <= {iss_q, now, ctl_code, ctl_disable};
-    always @(posedge clk) if (!rst && sw_expire)
+    // A retired entry's quarantine time is never read: it is rewritten by the
+    // next expiry before that entry can be QUARANTINED via the sweep again.
+    always @(posedge clk) if (!rst && sw_expire_raw)
         tqr[sw_idx] <= now;
 
     // ---- control state ------------------------------------------------------------------------
@@ -175,7 +196,7 @@ module pcileech_req_table #(
         to_valid <= 1'b0;
         if (rst) begin
             for (i = 0; i < 256; i = i + 1) begin
-                st[i] <= `REQ_ST_FREE; sup[i] <= 1'b0; lvt[i] <= 1'b0;
+                st[i] <= `REQ_ST_FREE; sup[i] <= 1'b0;
                 // fl needs no reset: every admission writes it.
             end
             sw_idx      <= 8'd0;
@@ -200,7 +221,6 @@ module pcileech_req_table #(
                 if (sup_hit) sup[sup_old] <= 1'b1;
                 st[adm_tag]   <= `REQ_ST_RESERVED;
                 sup[adm_tag]  <= 1'b0;
-                lvt[adm_tag]  <= 1'b0;
                 fl[adm_tag]   <= flr;
             end
 
@@ -216,17 +236,15 @@ module pcileech_req_table #(
                 else                                 err_release <= 1'b1;
             end
 
-            if (up_valid) begin
-                if (up_retire) st[up_tag]  <= `REQ_ST_FREE;
-                else           lvt[up_tag] <= 1'b1;
-            end
-
-            if (sw_expire) begin
+            if (sw_expire_raw)
                 st[sw_idx] <= `REQ_ST_QUARANTINED;
-                to_valid   <= 1'b1;
-                to_tag     <= sw_idx;
-            end else if (sw_drain)
+            else if (sw_drain_raw)
                 st[sw_idx] <= `REQ_ST_FREE;
+            to_valid <= sw_expire;
+            if (sw_expire) to_tag <= sw_idx;
+
+            // After the sweep: a same-cycle retire of the swept entry wins.
+            if (up_valid && up_retire) st[up_tag] <= `REQ_ST_FREE;
         end
     end
 

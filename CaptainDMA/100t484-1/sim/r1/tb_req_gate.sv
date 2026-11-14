@@ -130,6 +130,16 @@ module tb_req_gate;
             source_index <= source_index + 1;
         end
     end
+    // Full-rate contract: with the sink always ready, the gate's input
+    // register and three-entry queue must keep pulling every cycle.
+    integer full_rate_cycles = 0, ready_run = 0;
+    always @(posedge clk) begin
+        ready_run <= (!rst && sink_mode == 0 && out_ready) ? ready_run + 1 : 0;
+        if (!rst && sink_mode == 0 && ready_run > 4) begin
+            full_rate_cycles <= full_rate_cycles + 1;
+            check(in_ready, "pull every cycle while the sink is always ready");
+        end
+    end
     always @(negedge clk) begin
         case (sink_mode)
             0: out_ready = !rst;
@@ -393,7 +403,7 @@ module tb_req_gate;
         refused(d,0,0,2); // orphan posted tail must not bypass reset recovery
         add(mrd(8'hdf),7,1,1,1,1,0); drain;
         check(admitted_count == 1 && n_reserved == 1, "post-reset session starts at tag zero");
-        $display("R1_TB_PASS tb_req_gate checks=%0d CAP=%0d",checks,CAP);
+        $display("R1_TB_PASS tb_req_gate checks=%0d CAP=%0d full_rate_cycles=%0d",checks,CAP,full_rate_cycles);
         $finish;
     end
     initial begin #10000000; $display("R1_TB_FAIL timeout"); $fatal(1); end

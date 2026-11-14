@@ -24,6 +24,7 @@ BENCHES = {
     "tb_req_tagalloc": ["pcileech_req_tagalloc.sv"],
     "tb_req_cto_limits": ["pcileech_req_cto_limits.sv"],
     "tb_req_table": ["pcileech_req_table.sv", "pcileech_req_cto_limits.sv"],
+    "tb_req_table_equiv": ["pcileech_req_table.sv", "pcileech_req_cto_limits.sv"],
     "tb_req_err": ["pcileech_req_err.sv"],
     "tb_req_rx_cpl": [
         "pcileech_req_rx_cpl.sv",
@@ -53,7 +54,10 @@ BENCHES = {
 
 # Simulation-only models (in this directory) compiled with a bench, and the
 # port-only stubs that stand in for them when linting the RTL.
-SIM_MODELS = {"tb_req_status": ["xpm_cdc_handshake_model.sv"]}
+SIM_MODELS = {
+    "tb_req_status": ["xpm_cdc_handshake_model.sv"],
+    "tb_req_table_equiv": ["req_table_reference.sv"],
+}
 LINT_STUBS = {"pcileech_req_status": ["xpm_cdc_handshake_bbox.sv"]}
 
 # bench -> parameter sets; each set is a separate run.
