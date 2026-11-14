@@ -126,13 +126,10 @@ module pcileech_tlps128_dst_fifo(
     IfPCIeFifoTlp.mp_pcie   dfifo
 );
 
-    wire         tvalid;
     wire         fifo_valid;
     wire         fifo_full;
-    wire [127:0] tdata;
-    wire [3:0]   tkeepdw;
-    wire         tlast;
-    wire         first;
+    wire         fifo_rd;
+    wire [133:0] fifo_dout;
 
     // FIFO reset no-access window (see pcileech_tlps128_fifo_rst_window).
     wire         acc_pcie;      // clk_pcie: write side may access the FIFO
@@ -170,30 +167,82 @@ module pcileech_tlps128_dst_fifo(
         .rd_clk     ( clk_sys           ),
         .din        ( { tlps_in.tuser[0], tlps_in.tlast, tlps_in.tkeepdw, tlps_in.tdata } ),
         .wr_en      ( tlps_in.tvalid && rx_pass ),
-        .rd_en      ( dfifo.rx_rd_en && acc_sys ),
-        .dout       ( { first, tlast, tkeepdw, tdata } ),
+        .rd_en      ( fifo_rd           ),
+        .dout       ( fifo_dout         ),
         .full       ( fifo_full         ),
         .empty      (                   ),
         .valid      ( fifo_valid        )
     );
-    assign tvalid = fifo_valid && acc_sys;
 
-    assign dfifo.rx_data[0]  = tdata[31:0];
-    assign dfifo.rx_data[1]  = tdata[63:32];
-    assign dfifo.rx_data[2]  = tdata[95:64];
-    assign dfifo.rx_data[3]  = tdata[127:96];
-    assign dfifo.rx_first[0] = first;
+    // SYS-side prefetch (timing). pcileech_mux pulls with rx_rd_en in cycle n
+    // and writes only the response present in n+1. That response is served
+    // from registers, so the FIFO's block-RAM output (standard mode, no output
+    // register) and the per-DW keep decode stay off the mux index and
+    // write-enable chain. Up to three beats are read ahead; a FIFO read is
+    // issued only while buffered plus in-flight beats leave room, keeping one
+    // beat per cycle. The reset window (acc_sys low) flushes the buffer, as it
+    // previously masked the FIFO output. A beat popped in the cycle before rst
+    // rises is still presented in the first rst cycle, where the old
+    // combinational mask (acc_sys = ok_sys && !rst) dropped it; the output
+    // lanes are gated with rst (a clk_sys register) to match.
+    reg  [133:0] pb [0:2];
+    reg  [1:0]   pb_head  = 2'd0;
+    reg  [1:0]   pb_count = 2'd0;
+    reg          rd_q     = 1'b0;      // FIFO read issued last cycle
+    wire         push     = fifo_valid && acc_sys;
+    wire         pop      = dfifo.rx_rd_en && acc_sys && (pb_count != 2'd0);
+    wire [2:0]   pb_wsum  = {1'b0, pb_head} + {1'b0, pb_count};
+    wire [1:0]   pb_tail  = pb_wsum >= 3'd3 ? pb_wsum[1:0] - 2'd3 : pb_wsum[1:0];
+    assign       fifo_rd  = acc_sys && ({1'b0, pb_count} + {2'b0, rd_q} <= 3'd2);
+
+    reg  [127:0] o_data;
+    reg          o_first  = 1'b0;
+    reg  [3:0]   o_valid  = 4'b0;
+    reg  [3:0]   o_last   = 4'b0;
+    wire [133:0] head     = pb[pb_head];
+    always @ ( posedge clk_sys )
+        if ( !acc_sys ) begin
+            pb_head  <= 2'd0;
+            pb_count <= 2'd0;
+            rd_q     <= 1'b0;
+            o_valid  <= 4'b0;
+            o_last   <= 4'b0;
+            o_first  <= 1'b0;
+        end
+        else begin
+            rd_q     <= fifo_rd;
+            if ( push )
+                pb[pb_tail] <= fifo_dout;
+            pb_count <= pb_count + {1'b0, push} - {1'b0, pop};
+            if ( pop )
+                pb_head <= (pb_head == 2'd2) ? 2'd0 : pb_head + 2'd1;
+            // head = { first, tlast, tkeepdw[3:0], tdata[127:0] }
+            o_valid  <= pop ? head[131:128] : 4'b0;
+            o_first  <= pop && head[133];
+            o_last   <= pop ? { head[132] && (head[131:128] == 4'b1111),
+                                head[132] && (head[131:128] == 4'b0111),
+                                head[132] && (head[131:128] == 4'b0011),
+                                head[132] && (head[131:128] == 4'b0001) } : 4'b0;
+            if ( pop )
+                o_data <= head[127:0];
+        end
+
+    assign dfifo.rx_data[0]  = o_data[31:0];
+    assign dfifo.rx_data[1]  = o_data[63:32];
+    assign dfifo.rx_data[2]  = o_data[95:64];
+    assign dfifo.rx_data[3]  = o_data[127:96];
+    assign dfifo.rx_first[0] = o_first;
     assign dfifo.rx_first[1] = 0;
     assign dfifo.rx_first[2] = 0;
     assign dfifo.rx_first[3] = 0;
-    assign dfifo.rx_last[0]  = tlast && (tkeepdw == 4'b0001);
-    assign dfifo.rx_last[1]  = tlast && (tkeepdw == 4'b0011);
-    assign dfifo.rx_last[2]  = tlast && (tkeepdw == 4'b0111);
-    assign dfifo.rx_last[3]  = tlast && (tkeepdw == 4'b1111);
-    assign dfifo.rx_valid[0] = tvalid && tkeepdw[0];
-    assign dfifo.rx_valid[1] = tvalid && tkeepdw[1];
-    assign dfifo.rx_valid[2] = tvalid && tkeepdw[2];
-    assign dfifo.rx_valid[3] = tvalid && tkeepdw[3];
+    assign dfifo.rx_last[0]  = o_last[0];
+    assign dfifo.rx_last[1]  = o_last[1];
+    assign dfifo.rx_last[2]  = o_last[2];
+    assign dfifo.rx_last[3]  = o_last[3];
+    assign dfifo.rx_valid[0] = o_valid[0] && !rst;
+    assign dfifo.rx_valid[1] = o_valid[1] && !rst;
+    assign dfifo.rx_valid[2] = o_valid[2] && !rst;
+    assign dfifo.rx_valid[3] = o_valid[3] && !rst;
 
 endmodule
 
