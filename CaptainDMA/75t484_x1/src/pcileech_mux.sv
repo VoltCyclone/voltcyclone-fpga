@@ -108,14 +108,22 @@ module pcileech_mux(
     
     
     
-    // output buffer logic, when rd_en is deasserted the output data must be
-    // buffered not to cause data loss.
+    // Output queue. Ports are pulled while rd_en is high and answer one cycle
+    // later (en), and a word completes the cycle after that (dout_valid), so
+    // up to two words can still complete after rd_en falls. Every completed
+    // word is queued and leaves only while rd_en is high, in order. (The
+    // previous single buffer loaded only while en was low: a word completing
+    // as rd_en fell was dropped, and the buffered word was presented twice
+    // when rd_en rose while en was still low.)
     reg             dout_valid;
     wire [255:0]    dout_data = { ctx_reg[1], ctx_reg[0], ctx_reg[3], ctx_reg[2], ctx_reg[5], ctx_reg[4], 4'hE, ctx_reg[6], data_reg[0], data_reg[1], data_reg[2], data_reg[3], data_reg[4], data_reg[5], data_reg[6] };
-    reg             dout_buf_valid;
-    reg [255:0]     dout_buf_data;
-    assign valid = rd_en && (dout_buf_valid || dout_valid);
-    assign dout = dout_buf_valid ? dout_buf_data : dout_data;
+    reg [255:0]     oq [0:3];
+    reg [1:0]       oq_rd;
+    reg [1:0]       oq_wr;
+    reg [2:0]       oq_cnt;
+    wire            oq_pop = rd_en && (oq_cnt != 3'd0);
+    assign valid = oq_pop;
+    assign dout  = oq[oq_rd];
     
     
     
@@ -125,18 +133,26 @@ module pcileech_mux(
                 idx_base <= 0;
                 idle_count <= 0;
                 dout_valid <= 0;
-                dout_buf_valid <= 0;
+                oq_rd <= 0;
+                oq_wr <= 0;
+                oq_cnt <= 0;
             end
         else
             begin
-                // OUTPUT BUFFER LOGIC:
-                
-                if( en ) begin
-                    dout_buf_valid <= 0;
-                end else if( dout_valid ) begin
-                    dout_buf_data <= dout_data;
-                    dout_buf_valid <= 1;
+                // OUTPUT QUEUE:
+                if( dout_valid ) begin
+                    oq[oq_wr] <= dout_data;
+                    oq_wr <= oq_wr + 1;
                 end
+                if( oq_pop )
+                    oq_rd <= oq_rd + 1;
+                oq_cnt <= oq_cnt + {2'b0, dout_valid} - {2'b0, oq_pop};
+`ifndef SYNTHESIS
+`ifndef FORMAL
+                if( dout_valid && !oq_pop && (oq_cnt == 3'd4) )
+                    $fatal(1, "PCILEECH_MUX_OQ_OVERFLOW");
+`endif
+`endif
             
                 // OUTPUT VALID:
                 dout_valid <= en && (idx_max >= 7);
@@ -172,4 +188,11 @@ module pcileech_mux(
 
             end
     end
+`ifdef FORMAL
+    // Queue bound for any rd_en and port write pattern (prove_mux_oq.py).
+    reg f_past = 1'b0;
+    always @ ( posedge clk ) f_past <= 1'b1;
+    always @ ( * ) if ( !f_past ) assume( rst );
+    always @ ( posedge clk ) if ( f_past && !rst ) assert( oq_cnt <= 3'd3 );
+`endif
 endmodule

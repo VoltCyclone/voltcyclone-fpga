@@ -36,3 +36,16 @@ before; `valid` still never rises while `rd_en` is low.
 
 The mux assumes at most seven DWs per cycle across its ports on average (it
 has no input backpressure); that is unchanged.
+
+## Other boards
+
+Every board that carried this stock mux now carries the identical fixed file
+(CaptainDMA 35t325_x1, 35t325_x4, 35t484_x1, 75t484_x1; EnigmaX1; GBOX;
+PCIeSquirrel; ScreamerM2; ZDMA/100T; ac701_ft601), so the benches here cover
+them. Out-of-context synthesis on each part used (xc7a35t csg325/fgg484,
+xc7a75t, xc7a100t, xc7a200t) is clean and smaller than stock: 2,310 vs 2,409
+LUTs, 521 vs 767 registers (the queue maps to LUT RAM).
+
+acorn_ft2232h, pciescreamer, NeTV2 and sp605_ft601 use an older, different mux
+whose `valid` is not gated by `rd_en` (`rd_en` only throttles port requests,
+and sp605 has no `rd_en`); it does not have this defect and is unchanged.
