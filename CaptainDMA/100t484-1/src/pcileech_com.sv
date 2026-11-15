@@ -103,7 +103,7 @@ module pcileech_com #(
         // while the initial_rx boot words are muxed onto dfifo.com_dout.
         localparam integer FT601_STABLE_CYCLES = 64;
 `ifndef SYNTHESIS
-        initial if (FT601_STABLE_CYCLES <= INITIAL_RX_START + INITIAL_RX_WORDS)
+        initial if (FT601_STABLE_CYCLES <= INITIAL_RX_START + INITIAL_RX_WORDS + 1)   // +1: registered boot words
             $fatal(1, "COM boot words can overlap COM RX after rst");
 `endif
         pcileech_ft601_clk #(
@@ -231,8 +231,18 @@ module pcileech_com #(
     end endgenerate
     wire rst_stream_com = rst_com || !fifo_run_com;
 
-    wire        initial_rx_valid    = ~rst & (tickcount64 >= INITIAL_RX_START) & (tickcount64 < INITIAL_RX_WORDS + INITIAL_RX_START);
-    wire [63:0] initial_rx_data     = initial_rx_valid ? initial_rx[tickcount64 - INITIAL_RX_START] : 64'h0;
+    // Boot words are registered: the 64-bit tickcount64 window compare used to
+    // drive dfifo.com_dout_valid combinationally, 14 logic levels into the
+    // command FIFO write enable and the src FIFO tdata enables. Each word now
+    // leaves one SYS cycle later; a rst cycle still masks the output.
+    wire        initial_rx_hit      = (tickcount64 >= INITIAL_RX_START) & (tickcount64 < INITIAL_RX_WORDS + INITIAL_RX_START);
+    bit         initial_rx_q        = 1'b0;
+    bit [63:0]  initial_rx_data     = 64'h0;
+    always @ ( posedge clk ) begin
+        initial_rx_q    <= ~rst & initial_rx_hit;
+        initial_rx_data <= initial_rx_hit ? initial_rx[tickcount64 - INITIAL_RX_START] : 64'h0;
+    end
+    wire        initial_rx_valid    = initial_rx_q & ~rst;
     
     // ----------------------------------------------------------------------------
     // COMMUNICATION CORE RX DATA BELOW:
