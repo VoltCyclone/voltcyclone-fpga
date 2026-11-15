@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 `include "pcileech_req_defs.svh"
 // Lockstep equivalence: req_table_reference.sv (4e2950b) vs the current table
-// (XOR live-value table, sweep decisions from registered state). Legal random
+// (XOR live-value table, sweep decisions from registered state, count stage). Legal random
 // admit/issue/release/progress/retire traffic, FLR, short completion timeout
 // (code 1) and retires aimed at the entry the sweep expires or drains.
 module tb_req_table_equiv;
@@ -21,7 +21,10 @@ module tb_req_table_equiv;
   .trn_pending(tp_``SUF),.err_bypass(eb_``SUF),.err_release(er_``SUF)
   pcileech_req_table_ref A(`PORTS(a));
   pcileech_req_table     B(`PORTS(b));
-  integer n, cmp=0, live=0, lvt1=0, k, tos=0; always @(posedge clk) if (tv_a) tos++;
+  integer n, cmp=0, live=0, lvt1=0, k, tos=0, cons=0; always @(posedge clk) if (tv_a) tos++;
+  // Count stage: the new counts are the reference's from one cycle earlier; the
+  // published n_reserved adds an admission still in the count stage.
+  reg [8:0] pnr=0, pni=0, pnq=0;
   function automatic [7:0] pick(input [1:0] want);   // random tag in a state, else 8'hff marker
     integer j, o; pick=8'hff; o=$urandom;
     for (j=0;j<256;j++) if (A.st[(j+o)&255]==want) begin pick=(j+o)&255; return pick; end
@@ -51,9 +54,18 @@ module tb_req_table_equiv;
         end
         cmp++;
       end
-      if ({f_a,tv_a,tt_a,nr_a,ni_a,nq_a,tp_a,eb_a,er_a} !== {f_b,tv_b,tt_b,nr_b,ni_b,nq_b,tp_b,eb_b,er_b}) begin $display("R1_TB_FAIL status mismatch n=%0d",n); $fatal(1); end
+      if ({f_a,tv_a,tt_a,eb_a,er_a} !== {f_b,tv_b,tt_b,eb_b,er_b}) begin $display("R1_TB_FAIL status mismatch n=%0d",n); $fatal(1); end
+      if (ni_b !== pni || nq_b !== pnq || nr_b !== pnr + {8'd0, B.e_adm} || tp_b !== (nr_b != 0 || ni_b != 0)) begin
+        $display("R1_TB_FAIL count-stage mismatch n=%0d new r/i/q=%0d/%0d/%0d ref(prev) %0d/%0d/%0d e_adm=%0d", n, nr_b, ni_b, nq_b, pnr, pni, pnq, B.e_adm); $fatal(1);
+      end
+      // Gate NP-cap and Transactions Pending safety: never below the current count.
+      if ({1'b0,nr_b} + {1'b0,ni_b} < {1'b0,nr_a} + {1'b0,ni_a} || (tp_a && !tp_b)) begin
+        $display("R1_TB_FAIL count below current n=%0d new %0d+%0d ref %0d+%0d tp %0d/%0d", n, nr_b, ni_b, nr_a, ni_a, tp_b, tp_a); $fatal(1);
+      end
+      if ({1'b0,nr_b} + {1'b0,ni_b} != {1'b0,nr_a} + {1'b0,ni_a}) cons++;
+      pnr = nr_a; pni = ni_a; pnq = nq_a;
       for (k=0;k<256;k++) if (A.st[k]!=`REQ_ST_FREE && A.lvt[k]!==(B.ga[k]^B.gu[k])) begin $display("R1_TB_FAIL live-value mismatch n=%0d tag=%0d",n,k); $fatal(1); end
     end
-    $display("R1_TB_PASS tb_req_table_equiv cycles=%0d live_lookups=%0d update_bank_lookups=%0d timeouts_seen=%0d swept_retires=%0d", n, live, lvt1, tos, coll); $finish;
+    $display("R1_TB_PASS tb_req_table_equiv cycles=%0d live_lookups=%0d update_bank_lookups=%0d timeouts_seen=%0d swept_retires=%0d np_count_above_current=%0d", n, live, lvt1, tos, coll, cons); $finish;
   end
 endmodule

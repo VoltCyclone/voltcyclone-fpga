@@ -332,6 +332,7 @@ module tb_req_gate;
         if (CAP >= 32) refused(mrd(8'hf0),1,1,6);
         else refused(mrd(8'hf0),1,1,7);
         pulse_issue(0);
+        @(negedge clk);                 // req_table count stage
         check(n_issued == 1 && n_reserved == 9'(limit-1), "issue changes count class only");
         // Retire tag 0: round-robin must prefer the next unused tag, except
         // when all 32 base tags were full and 0 is the only eligible free tag.
@@ -356,6 +357,7 @@ module tb_req_gate;
         drain;
         for(i=0;i<CAP;i=i+1) pulse_issue(8'(i));
         @(negedge clk); flr = 1; @(negedge clk); flr = 0;
+        @(negedge clk);                 // req_table count stage
         check(n_issued == 0 && n_quarantined == 9'(CAP), "FLR quarantines issued entries");
         if(CAP < 256) begin add(mrd(8'hde),7,1,1,1,1,8'(CAP)); drain; end
         else refused(mrd(8'hde),1,1,6);

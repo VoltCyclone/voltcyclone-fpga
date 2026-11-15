@@ -71,8 +71,8 @@ module pcileech_req_table #(
     output [255:0]  free,
     output reg      to_valid,       // timeout event (ISSUED -> QUARANTINED)
     output reg [7:0] to_tag,
-    output reg [8:0] n_reserved,
-    output reg [8:0] n_issued,
+    output     [8:0] n_reserved,    // counts lag one cycle; n_reserved includes
+    output reg [8:0] n_issued,      // an admission still in the count stage
     output reg [8:0] n_quarantined,
     output          trn_pending,    // RESERVED or ISSUED exist (QUARANTINED excluded)
     output reg      err_bypass,     // sticky: issue for a tag that is not RESERVED
@@ -151,14 +151,14 @@ module pcileech_req_table #(
 
     // Sweep decisions use registered state only, so the completion lookup and
     // progress check stay off the per-entry state path. A same-cycle retire of
-    // the swept entry wins: the state update applies it after the sweep, and
-    // the timeout event and counts use the retire-qualified forms.
+    // the swept entry wins: the state update applies it after the sweep, the
+    // timeout event uses the retire-qualified form, and the count stage applies
+    // the same suppression from registered events.
     wire sw_retired = up_valid && up_retire && (up_tag == sw_idx);
     wire sw_expire_raw = (st[sw_idx] == `REQ_ST_ISSUED) && !sw_iss[0] && !ctl_disable &&
                          (sw_age_iss >= sw_t) && !flr;   // FLR quarantines silently
     wire sw_drain_raw  = (st[sw_idx] == `REQ_ST_QUARANTINED) && (sw_age_q >= sw_q);
     wire sw_expire  = sw_expire_raw && !sw_retired;
-    wire sw_drain   = sw_drain_raw  && !sw_retired;
 
     // ---- supersede: only the newest holder of a host tag can be unsuperseded ----------------
     // Every older live entry with the same host tag was marked when its successor was
@@ -248,7 +248,7 @@ module pcileech_req_table #(
         end
     end
 
-    // ---- counts: incremental, exact for the current state ---------------------------------
+    // ---- counts: incremental, one cycle behind the state ---------------------------------
     // Each transition adjusts the count of the state it leaves and the state it enters.
     // The ports act on distinct entries (admit: a FREE tag; issue and release: RESERVED,
     // never the same one; retire: ISSUED/QUARANTINED; a same-entry retire suppresses the
@@ -259,11 +259,44 @@ module pcileech_req_table #(
     // (free[g] above), so it leaves no counted state. Reading st[adm_tag] here put a
     // 256:1 mux behind the allocator and failed routed setup at n_quarantined.
     // n_live counts ISSUED + QUARANTINED with its own delta. An FLR only moves entries
-    // between the two, so the quarantined count after an FLR is n_live + d_live. That
-    // keeps one adder on the FLR path instead of n_issued + d_iss feeding a second one.
+    // between the two, so the quarantined count after an FLR is n_live + d_live.
+    //
+    // Count stage: the events are registered (e_*) and counted in the next cycle. The
+    // retire decision comes from the completion lookup and the byte-count check in the
+    // same cycle; counting it there, together with the sweep's same-entry suppression,
+    // was the worst userclk1 path (lookup -> retire -> sweep -> count adder). The
+    // registered counts therefore describe the state one cycle earlier. Admission is the
+    // only event that raises n_reserved + n_issued, so the published n_reserved adds an
+    // admission still in the count stage: the gate's NP-cap check and trn_pending see
+    // the current count or a higher one, never a lower one.
     wire [1:0] old_up  = st[up_tag];
     wire       iss_ok  = iss_valid && (st[iss_tag] == `REQ_ST_RESERVED);
+    reg        e_adm, e_iss, e_iss_q, e_rel, e_ret, e_exp, e_drn, e_flr;
+    reg  [1:0] e_old_up;
+    reg  [7:0] e_up_tag, e_sw_idx;
+    always @(posedge clk)
+        if (rst) begin
+            e_adm <= 1'b0; e_iss <= 1'b0; e_iss_q <= 1'b0; e_rel <= 1'b0;
+            e_ret <= 1'b0; e_exp <= 1'b0; e_drn <= 1'b0; e_flr <= 1'b0;
+            e_old_up <= 2'd0; e_up_tag <= 8'd0; e_sw_idx <= 8'd0;
+        end else begin
+            e_adm    <= adm_valid;
+            e_iss    <= iss_ok;
+            e_iss_q  <= iss_q;
+            e_rel    <= rel_valid && (st[rel_tag] == `REQ_ST_RESERVED);
+            e_ret    <= up_valid && up_retire;
+            e_old_up <= old_up;
+            e_up_tag <= up_tag;
+            e_exp    <= sw_expire_raw;
+            e_drn    <= sw_drain_raw;
+            e_sw_idx <= sw_idx;
+            e_flr    <= flr;
+        end
+    wire       e_sw_retired = e_ret && (e_up_tag == e_sw_idx);
+    wire       e_expire = e_exp && !e_sw_retired;
+    wire       e_drain  = e_drn && !e_sw_retired;
     reg  [9:0] d_res, d_iss, d_q, d_live;       // two's complement deltas
+    reg  [8:0] n_res_r;                         // RESERVED, one cycle behind
     reg  [8:0] n_live;                          // n_issued + n_quarantined
     task automatic leave(input [1:0] s);
         case (s)
@@ -275,27 +308,28 @@ module pcileech_req_table #(
     endtask
     always @* begin
         d_res = 10'd0; d_iss = 10'd0; d_q = 10'd0; d_live = 10'd0;
-        if (adm_valid) d_res = d_res + 10'd1;
-        if (iss_ok) begin
+        if (e_adm) d_res = d_res + 10'd1;
+        if (e_iss) begin
             d_res = d_res - 10'd1;
             d_live = d_live + 10'd1;
-            if (iss_q) d_q   = d_q   + 10'd1;
-            else       d_iss = d_iss + 10'd1;
+            if (e_iss_q) d_q   = d_q   + 10'd1;
+            else         d_iss = d_iss + 10'd1;
         end
-        if (rel_valid && st[rel_tag] == `REQ_ST_RESERVED) d_res = d_res - 10'd1;
-        if (up_valid && up_retire) leave(old_up);
-        if (sw_expire) begin d_iss = d_iss - 10'd1; d_q = d_q + 10'd1; end
-        else if (sw_drain) begin d_q = d_q - 10'd1; d_live = d_live - 10'd1; end
+        if (e_rel) d_res = d_res - 10'd1;
+        if (e_ret) leave(e_old_up);
+        if (e_expire) begin d_iss = d_iss - 10'd1; d_q = d_q + 10'd1; end
+        else if (e_drain) begin d_q = d_q - 10'd1; d_live = d_live - 10'd1; end
     end
     always @(posedge clk)
         if (rst) begin
-            n_reserved <= 9'd0; n_issued <= 9'd0; n_quarantined <= 9'd0; n_live <= 9'd0;
+            n_res_r <= 9'd0; n_issued <= 9'd0; n_quarantined <= 9'd0; n_live <= 9'd0;
         end else begin
-            n_reserved    <= n_reserved    + d_res[8:0];
-            n_issued      <= flr ? 9'd0 : n_issued + d_iss[8:0];
-            n_quarantined <= flr ? n_live + d_live[8:0] : n_quarantined + d_q[8:0];
+            n_res_r       <= n_res_r       + d_res[8:0];
+            n_issued      <= e_flr ? 9'd0 : n_issued + d_iss[8:0];
+            n_quarantined <= e_flr ? n_live + d_live[8:0] : n_quarantined + d_q[8:0];
             n_live        <= n_live        + d_live[8:0];
         end
+    assign n_reserved  = n_res_r + {8'd0, e_adm};
     assign trn_pending = (n_reserved != 9'd0) || (n_issued != 9'd0);
     // synthesis translate_off
     always @(posedge clk)

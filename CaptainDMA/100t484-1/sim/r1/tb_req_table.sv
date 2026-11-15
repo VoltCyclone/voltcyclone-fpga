@@ -55,22 +55,27 @@ module tb_req_table;
         to_count <= to_count + 1; to_cycle <= cycle; to_last <= to_tag;
     end
 
-    // Invariant, every cycle: the counts equal the current table state (no lag).
+    // Invariant, every cycle: the registered counts equal the table state one cycle
+    // earlier (count stage), and the published n_reserved adds an admission still in
+    // the count stage (dut.e_adm).
     integer inv_errors = 0;
     reg [8:0] pc_res, pc_iss, pc_q;
+    reg [8:0] pv_res = 0, pv_iss = 0, pv_q = 0;
+    reg       pv_ok = 1'b0;
     always @(negedge clk) begin
+        if (!rst && pv_ok && (n_reserved !== pv_res + {8'd0, dut.e_adm} || n_issued !== pv_iss || n_quarantined !== pv_q)) begin
+            if (inv_errors < 5)
+                $display("R1_TB_FAIL count invariant (cycle %0d): res %0d/%0d+%0d iss %0d/%0d q %0d/%0d", cycle,
+                         n_reserved, pv_res, dut.e_adm, n_issued, pv_iss, n_quarantined, pv_q);
+            inv_errors = inv_errors + 1;
+        end
         pc_res = 0; pc_iss = 0; pc_q = 0;
         for (int k = 0; k < 256; k++) begin
             pc_res += (dut.st[k] == `REQ_ST_RESERVED);
             pc_iss += (dut.st[k] == `REQ_ST_ISSUED);
             pc_q   += (dut.st[k] == `REQ_ST_QUARANTINED);
         end
-        if (!rst && (n_reserved !== pc_res || n_issued !== pc_iss || n_quarantined !== pc_q)) begin
-            if (inv_errors < 5)
-                $display("R1_TB_FAIL count invariant (cycle %0d): res %0d/%0d iss %0d/%0d q %0d/%0d", cycle,
-                         n_reserved, pc_res, n_issued, pc_iss, n_quarantined, pc_q);
-            inv_errors = inv_errors + 1;
-        end
+        pv_res = pc_res; pv_iss = pc_iss; pv_q = pc_q; pv_ok = !rst;
     end
 
     task check;
