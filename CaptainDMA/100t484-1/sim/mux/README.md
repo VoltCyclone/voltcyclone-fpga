@@ -15,9 +15,14 @@ loaded only while `en` was low:
   in that cycle and again in the next: **written twice**.
 
 Either corrupts the 256-bit word stream to the host whenever the USB side
-backs up. The fix queues every completed word (four entries) and presents the
-head while `rd_en` is high. Words reach the COM FIFO one cycle later than
-before; `valid` still never rises while `rd_en` is low.
+backs up. The fix queues every completed word (eight entries) and presents the
+head while `rd_en` is high; `valid` never rises while `rd_en` is low.
+
+For timing, port answers are also registered before packing, together with
+per-port prefix counts, so each port's slot index is `idx_base + q_pre[k]`
+(one 4-bit add) instead of the stock eight-stage ripple. That ripple, behind
+the dst FIFO lane gate, set the worst `net_clk` path. Words reach the COM FIFO
+two cycles later than stock.
 
 ## Checks
 
@@ -29,7 +34,7 @@ before; `valid` still never rises while `rd_en` is low.
   the frozen stock mux (`pcileech_mux_stock.sv`) must fail the two toggling
   modes and pass with ready held.
 - `prove_mux_oq.py` (SymbiYosys, `abc pdr`): queue occupancy never exceeds
-  three for any `rd_en` and port pattern after reset; a two-entry bound must
+  four for any `rd_en` and port pattern after reset; a three-entry bound must
   fail (the bound is reached).
 - `../dst_fifo/run_dst_mux.py` also checks the decoded mux output exactly,
   with `--mutant stock_mux` as a control.

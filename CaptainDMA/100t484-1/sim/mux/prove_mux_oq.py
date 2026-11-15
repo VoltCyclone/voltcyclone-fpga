@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Prove the pcileech_mux output queue never exceeds three words (SymbiYosys).
+"""Prove the pcileech_mux output queue never exceeds four words (SymbiYosys).
 
 All ports and rd_en are unconstrained after an initial reset. PDR (abc pdr)
-needs no induction depth. Negative control: a 2-entry bound must fail.
+needs no induction depth. Negative control: a 3-entry bound must fail
+(the bound is reached). The queue has eight entries.
 Requires sby/yosys/abc on PATH (oss-cad-suite).
 """
 from __future__ import annotations
@@ -21,7 +22,7 @@ mode prove
 abc pdr
 
 [script]
-read -formal -DFORMAL pcileech_mux.sv
+read -formal -DFORMAL -DPCILEECH_MUX_OQ_BOUND={bound} pcileech_mux.sv
 prep -top pcileech_mux
 
 [files]
@@ -32,11 +33,8 @@ prep -top pcileech_mux
 def run(bound: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "pcileech_mux.sv"
-        text = (BOARD / "src/pcileech_mux.sv").read_text()
-        if bound != "3'd3":
-            text = text.replace("assert( oq_cnt <= 3'd3 );", f"assert( oq_cnt <= {bound} );")
-        src.write_text(text)
-        (Path(tmp) / "p.sby").write_text(SBY.format(src=src))
+        src.write_text((BOARD / "src/pcileech_mux.sv").read_text())
+        (Path(tmp) / "p.sby").write_text(SBY.format(src=src, bound=bound))
         r = subprocess.run(["sby", "-f", "p.sby"], cwd=tmp, capture_output=True, text=True, timeout=1800)
         out = r.stdout + r.stderr
         for status in ("PASS", "FAIL", "ERROR"):
@@ -49,10 +47,10 @@ def main() -> int:
     if not shutil.which("sby"):
         print("sby not found", file=sys.stderr)
         return 2
-    real = run("3'd3")
-    ctrl = run("3'd2")
-    print(f"MUX_OQ_BOUND3 {real}")
-    print(f"MUX_OQ_BOUND2_CONTROL {ctrl} (expected FAIL)")
+    real = run("4")
+    ctrl = run("3")
+    print(f"MUX_OQ_BOUND4 {real}")
+    print(f"MUX_OQ_BOUND3_CONTROL {ctrl} (expected FAIL)")
     return 0 if real == "PASS" and ctrl == "FAIL" else 1
 
 
