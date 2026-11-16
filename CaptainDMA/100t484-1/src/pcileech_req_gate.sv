@@ -102,7 +102,13 @@ module pcileech_req_gate (
     wire [1:0] q_count_next = q_count + {1'b0,push} - {1'b0,pop};
     wire [2:0] q_wsum = {1'b0,q_head} + {1'b0,q_count};
     wire [1:0] q_tail = q_wsum >= 3'd3 ? q_wsum[1:0] - 2'd3 : q_wsum[1:0];
-    assign in_ready = !rst && ({1'b0,q_count_next} + {2'b0,pulled} <= 3'd2);
+    // The pull decision assumes the registered beat is pushed (s_valid, not push):
+    // push waits on classification, the tag offer and the NP-cap compare, which
+    // put the whole classifier in front of the merged arbiter's pull (userclk1).
+    // The bound is never below q_count_next, so the room argument above holds;
+    // a dropped beat only costs a pull in that cycle.
+    wire [2:0] q_count_ub = {1'b0,q_count} + {2'b0,s_valid} - {2'b0,pop};
+    assign in_ready = !rst && (q_count_ub + {2'b0,pulled} <= 3'd2);
     assign out_has_data = !rst && (q_count != 0);
 
     reg [127:0] rewritten;

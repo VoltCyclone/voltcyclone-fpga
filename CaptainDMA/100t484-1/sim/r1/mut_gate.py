@@ -90,8 +90,8 @@ MUTANTS = [
     ),
     (
         "ignore_promised_input",
-        "({1'b0,q_count_next} + {2'b0,pulled}",
-        "({1'b0,q_count} + {2'b0,pulled}",
+        "{1'b0,q_count} + {2'b0,s_valid} - {2'b0,pop}",
+        "{1'b0,q_count} - {2'b0,pop}",
         "tb_req_gate",
         36,
     ),
@@ -113,8 +113,8 @@ MUTANTS = [
     ("overwrite_head", "[q_tail] <=", "[q_head] <=", "tb_req_gate", 36),
     (
         "ignore_pull_in_flight",
-        "({1'b0,q_count_next} + {2'b0,pulled} <= 3'd2)",
-        "({1'b0,q_count_next} <= 3'd2)",
+        "(q_count_ub + {2'b0,pulled} <= 3'd2)",
+        "(q_count_ub <= 3'd2)",
         "tb_req_gate",
         36,
     ),
