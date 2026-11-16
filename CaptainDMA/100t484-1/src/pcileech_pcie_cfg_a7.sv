@@ -12,7 +12,8 @@
 
 module pcileech_pcie_cfg_a7(
     input                   rst,            // clk_pcie synchronous reset
-    input                   rst_sys,        // clk_sys register: rst of the clk_sys<->clk_pcie FIFOs
+    input                   rst_sys,        // clk_sys register: quarantine of the clk_sys<->clk_pcie FIFOs
+    input                   rst_fifo,       // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
     input                   clk_sys,
     input                   clk_pcie,
     IfPCIeFifoCfg.mp_pcie   dfifo,
@@ -36,7 +37,21 @@ module pcileech_pcie_cfg_a7(
     reg             in_rden;
     wire [63:0]     in_dout;
     wire            in_empty;
-    wire            in_valid;
+    wire            in_valid_fifo;
+
+    // FIFO reset no-access window (pcileech_tlps128_fifo_rst_window): both
+    // FIFOs below share the reset and clocks. Host commands and replies that
+    // meet the window are dropped, as they are dropped by the FIFO reset.
+    wire            acc_sys;            // clk_sys:  the FIFOs may be accessed
+    wire            acc_pcie;           // clk_pcie: the FIFOs may be accessed
+    pcileech_tlps128_fifo_rst_window i_rst_window(
+        .rst            ( rst_sys               ),
+        .clk_sys        ( clk_sys               ),
+        .clk_pcie       ( clk_pcie              ),
+        .acc_sys        ( acc_sys               ),
+        .acc_pcie       ( acc_pcie              )
+    );
+    wire            in_valid = in_valid_fifo && acc_pcie;
     
     reg [63:0]      in_data64;
     wire [31:0]     in_data32   = in_data64[63:32];
@@ -44,16 +59,16 @@ module pcileech_pcie_cfg_a7(
     wire [3:0]      in_type     = in_data64[15:12];
 	
     fifo_64_64 i_fifo_pcie_cfg_tx(
-        .rst            ( rst_sys               ),
+        .rst            ( rst_fifo              ),
         .wr_clk         ( clk_sys               ),
         .rd_clk         ( clk_pcie              ),
         .din            ( dfifo.tx_data         ),
-        .wr_en          ( dfifo.tx_valid        ),
-        .rd_en          ( in_rden               ),
+        .wr_en          ( dfifo.tx_valid && acc_sys ),
+        .rd_en          ( in_rden && acc_pcie   ),
         .dout           ( in_dout               ),
         .full           (                       ),
         .empty          ( in_empty              ),
-        .valid          ( in_valid              )
+        .valid          ( in_valid_fifo         )
     );
     
     // ------------------------------------------------------------------------
@@ -63,19 +78,21 @@ module pcileech_pcie_cfg_a7(
     reg             out_wren;
     reg [31:0]      out_data;
     wire            pcie_cfg_rx_almost_full;
+    wire            out_valid_fifo;
+    assign dfifo.rx_valid = out_valid_fifo && acc_sys;
     
     fifo_32_32_clk2 i_fifo_pcie_cfg_rx(
-        .rst            ( rst_sys               ),
+        .rst            ( rst_fifo              ),
         .wr_clk         ( clk_pcie              ),
         .rd_clk         ( clk_sys               ),
         .din            ( out_data              ),
-        .wr_en          ( out_wren              ),
-        .rd_en          ( dfifo.rx_rd_en        ),
+        .wr_en          ( out_wren && acc_pcie  ),
+        .rd_en          ( dfifo.rx_rd_en && acc_sys ),
         .dout           ( dfifo.rx_data         ),
         .full           (                       ),
         .almost_full    ( pcie_cfg_rx_almost_full ),
         .empty          (                       ),
-        .valid          ( dfifo.rx_valid        )
+        .valid          ( out_valid_fifo        )
     );
     
     // ------------------------------------------------------------------------

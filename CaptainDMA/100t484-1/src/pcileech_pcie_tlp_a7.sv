@@ -12,7 +12,8 @@
 
 module pcileech_pcie_tlp_a7(
     input                   rst,            // clk_pcie synchronous reset
-    input                   rst_sys,        // clk_sys register: clk_sys logic and clk_sys<->clk_pcie FIFO rst
+    input                   rst_sys,        // clk_sys register: clk_sys logic and clk_sys<->clk_pcie FIFO quarantine
+    input                   rst_fifo,       // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
     input                   clk_pcie,
     input                   clk_sys,
     // shadow/BAR/filter controls, already carried into clk_pcie as one word
@@ -56,6 +57,7 @@ module pcileech_pcie_tlp_a7(
     pcileech_tlps128_cfgspace_shadow i_pcileech_tlps128_cfgspace_shadow(
         .rst            ( rst                           ),
         .rst_sys        ( rst_sys                       ),
+        .rst_fifo       ( rst_fifo                      ),
         .clk_pcie       ( clk_pcie                      ),
         .cfgtlp_en      ( cfgtlp_en                     ),
         .cfgtlp_zero    ( cfgtlp_zero                   ),
@@ -77,7 +79,8 @@ module pcileech_pcie_tlp_a7(
     );
     
     pcileech_tlps128_dst_fifo i_pcileech_tlps128_dst_fifo(
-        .rst            ( rst_sys                       ),  // FIFO rst only
+        .rst            ( rst_sys                       ),  // FIFO quarantine only
+        .rst_fifo       ( rst_fifo                      ),
         .clk_pcie       ( clk_pcie                      ),
         .clk_sys        ( clk_sys                       ),
         .tlps_in        ( tlps_filtered.sink_lite       ),
@@ -92,6 +95,7 @@ module pcileech_pcie_tlp_a7(
     pcileech_tlps128_src_fifo i_pcileech_tlps128_src_fifo(
         .rst            ( rst                           ),
         .rst_sys        ( rst_sys                       ),
+        .rst_fifo       ( rst_fifo                      ),
         .clk_pcie       ( clk_pcie                      ),
         .clk_sys        ( clk_sys                       ),
         .dfifo_tx_data  ( dfifo.tx_data                 ),
@@ -119,7 +123,8 @@ endmodule
 // Forward the data to output device (FT601, etc.). 
 // ------------------------------------------------------------------------
 module pcileech_tlps128_dst_fifo(
-    input                   rst,            // clk_sys register: FIFO rst
+    input                   rst,            // clk_sys register: FIFO quarantine (window rst)
+    input                   rst_fifo,       // clk_sys register: FIFO rst pin
     input                   clk_pcie,
     input                   clk_sys,
     IfAXIS128.sink_lite     tlps_in,
@@ -162,7 +167,7 @@ module pcileech_tlps128_dst_fifo(
             rx_admit <= rx_pass && !tlps_in.tlast;
 
     fifo_134_134_clk2 i_fifo_134_134_clk2 (
-        .rst        ( rst               ),
+        .rst        ( rst_fifo          ),
         .wr_clk     ( clk_pcie          ),
         .rd_clk     ( clk_sys           ),
         .din        ( { tlps_in.tuser[0], tlps_in.tlast, tlps_in.tkeepdw, tlps_in.tdata } ),
@@ -310,7 +315,8 @@ endmodule
 // ------------------------------------------------------------------------
 module pcileech_tlps128_src_fifo (
     input                   rst,            // clk_pcie synchronous reset
-    input                   rst_sys,        // clk_sys register: clk_sys logic and FIFO rst
+    input                   rst_sys,        // clk_sys register: clk_sys logic and FIFO quarantine
+    input                   rst_fifo,       // clk_sys register: FIFO rst pins
     input                   clk_pcie,
     input                   clk_sys,
     input [31:0]            dfifo_tx_data,
@@ -405,7 +411,7 @@ module pcileech_tlps128_src_fifo (
     assign tlps_out.tvalid      = data_valid && acc_pcie;
 
     fifo_1_1_clk2 i_fifo_1_1_clk2(
-        .rst            ( rst_sys                   ),
+        .rst            ( rst_fifo                  ),
         .wr_clk         ( clk_sys                   ),
         .rd_clk         ( clk_pcie                  ),
         .din            ( 1'b1                      ),
@@ -424,7 +430,7 @@ module pcileech_tlps128_src_fifo (
     // 2.2 - submit to output fifo - will feed into mux/pcie core.
     //       together with 2.1 this will form a low-latency "packet fifo".
     fifo_134_134_clk2_rxfifo i_fifo_134_134_clk2_rxfifo(
-        .rst            ( rst_sys                   ),
+        .rst            ( rst_fifo                  ),
         .wr_clk         ( clk_sys                   ),
         .rd_clk         ( clk_pcie                  ),
         .din            ( { first, tlast, tkeepdw, tdata } ),
@@ -519,10 +525,11 @@ endmodule
 // from the full flag (asserted in reset, deasserted when the FIFO is ready
 // for writes, PG057 p.130-131); writes while full and reads while empty are
 // ignored (p.96-97).
-// rst must be a clk_sys register (the FIFO rst net itself). Not covered
-// here: PG057 also requires running clocks when rst is applied (p.127) and
-// >= 6 slower-clock cycles between resets (p.129); that is up to the reset
-// generator.
+// rst must be a clk_sys register that is high whenever the FIFO rst pin is
+// high and falls no earlier than the pin (rst_subsys_sys of
+// pcileech_pcie_a7_rst, which falls after the FIFO reset sequence). Running
+// clocks during reset (PG057 p.127) and >= 6 slower-clock cycles between
+// resets (p.129) are provided by that sequence (pcileech_com_fifo_reset).
 // ------------------------------------------------------------------------
 module pcileech_tlps128_fifo_rst_window #(
     parameter               NOACCESS_CYCLES = 30

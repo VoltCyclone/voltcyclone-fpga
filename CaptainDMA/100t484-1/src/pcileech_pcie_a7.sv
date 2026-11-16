@@ -70,7 +70,8 @@ module pcileech_pcie_a7 #(
     // RESETS - one per clock domain (see pcileech_pcie_a7_rst below).
     // ----------------------------------------------------------------------------
     wire rst_pcie_n;                    // -> core sys_rst_n
-    wire rst_subsys_sys;                // clk_sys subsystem reset + clk_sys<->clk_pcie FIFO rst
+    wire rst_subsys_sys;                // clk_sys subsystem reset; quarantines the clk_sys<->clk_pcie FIFOs
+    wire rst_subsys_fifo;               // clk_sys register: async rst of the clk_sys<->clk_pcie FIFOs
     wire rst_subsys;                    // clk_pcie subsystem reset
     wire rst_clkpcie;                   // rst in clk_pcie
     wire rst_cfgword;                   // clk_sys: clears the control-word delivery gate
@@ -92,6 +93,7 @@ module pcileech_pcie_a7 #(
         .rst_pcie_src       ( rst_pcie_src              ),
         .rst_pcie_n         ( rst_pcie_n                ),
         .rst_subsys_sys     ( rst_subsys_sys            ),
+        .rst_subsys_fifo    ( rst_subsys_fifo           ),
         .rst_subsys         ( rst_subsys                ),
         .rst_clkpcie        ( rst_clkpcie               ),
         .rst_cfgword        ( rst_cfgword               )
@@ -138,6 +140,7 @@ module pcileech_pcie_a7 #(
     pcileech_pcie_cfg_a7 i_pcileech_pcie_cfg_a7(
         .rst                        ( rst_subsys                ),
         .rst_sys                    ( rst_subsys_sys            ),
+        .rst_fifo                   ( rst_subsys_fifo           ),
         .clk_sys                    ( clk_sys                   ),
         .clk_pcie                   ( clk_pcie                  ),
         .dfifo                      ( dfifo_cfg                 ),        
@@ -165,6 +168,7 @@ module pcileech_pcie_a7 #(
     pcileech_pcie_tlp_a7 i_pcileech_pcie_tlp_a7(
         .rst                        ( rst_subsys                ),
         .rst_sys                    ( rst_subsys_sys            ),
+        .rst_fifo                   ( rst_subsys_fifo           ),
         .clk_pcie                   ( clk_pcie                  ),
         .clk_sys                    ( clk_sys                   ),
         .cfgtlp_en                  ( pcie_cfgtlp_en            ),
@@ -933,7 +937,8 @@ module pcileech_pcie_a7_rst(
     input                   drp_ok,             // clk_sys: reset-held DRP plan applied and verified
     output                  rst_pcie_src,       // clk_sys: rst || ~perst_n || pcie_rst_core (DRP startup trigger)
     output reg              rst_pcie_n = 1'b0,  // core sys_rst_n
-    output reg              rst_subsys_sys = 1'b1,
+    output reg              rst_subsys_sys = 1'b1,  // clk_sys: subsystem reset and FIFO quarantine
+    output                  rst_subsys_fifo,    // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
     output                  rst_subsys,
     output                  rst_clkpcie,
     output                  rst_cfgword         // clk_sys: rst_src of pcileech_pcie_cfgword_cdc
@@ -1102,13 +1107,47 @@ module pcileech_pcie_a7_rst(
         .dest_arst          ( rst_subsys_pcie_sys   )
     );
 
-    // Subsystem reset, clk_sys side: clk_sys logic and the asynchronous rst
-    // pins of the clk_sys<->clk_pcie FIFOs (one register, no LUT on the pin).
-    // It asserts with any reset source and is released only after the
-    // clk_pcie side has left reset (core user reset included), so clk_pcie
-    // state such as the TX packet count is never released after the FIFOs.
+    // Subsystem reset request, clk_sys side. It asserts with any reset source
+    // and is released only after the clk_pcie side has left reset (core user
+    // reset included), so clk_pcie state such as the TX packet count is never
+    // released after the FIFOs.
+    wire subsys_req_d = rst || pcie_rst_subsys || rst_subsys_pcie_sys;
+    reg  subsys_req = 1'b1;
     always @ ( posedge clk_sys )
-        rst_subsys_sys <= rst || pcie_rst_subsys || rst_subsys_pcie_sys;
+        subsys_req <= subsys_req_d;
+
+    // Asynchronous rst pins of the seven clk_sys<->clk_pcie FIFOs (cfg TX/RX,
+    // shadow request/reply, TLP RX, TLP TX data/token): one clk_sys register,
+    // no LUT on the pin. A subsystem reset may be one clk_sys cycle, may come
+    // a cycle after the previous one, and may happen while clk_pcie is
+    // stopped, so the FIFO reset does not follow subsys_req directly. The COM
+    // FIFO sequencer (pcileech_com.sv) holds the pin during the request and,
+    // once it is released, applies a fresh reset with at least six full
+    // periods low before, high, and low after it in BOTH clocks (PG057
+    // pp. 127-130; six low periods is local policy, as for the COM FIFOs).
+    // rst_com clears its clk_pcie half: rst_subsys_pcie_q is a register,
+    // asserted asynchronously with the request (also with clk_pcie stopped)
+    // and following the core user reset synchronously, so no LUT drives that
+    // asynchronous reset.
+    wire fifo_done;
+    pcileech_com_fifo_reset #(.COUNT_CYCLES(6)) i_fifo_reset (
+        .clk                ( clk_sys               ),
+        .clk_com            ( clk_pcie              ),
+        .unavailable        ( subsys_req            ),
+        .rst_com            ( rst_subsys_pcie_q     ),
+        .fifo_rst           ( rst_subsys_fifo       ),
+        .done               ( fifo_done             )
+    );
+
+    // Subsystem reset, clk_sys side: clk_sys logic and the FIFO quarantine
+    // (the rst of each pcileech_tlps128_fifo_rst_window). It rises at the same
+    // edge as subsys_req and falls one cycle after the FIFO sequence is done,
+    // so it is high whenever rst_subsys_fifo is high and the windows count
+    // their no-access cycles after the FIFO reset has been released. The
+    // subsys_req term bridges the cycle before the sequencer clears done, so
+    // a one-cycle request gives one continuous high level.
+    always @ ( posedge clk_sys )
+        rst_subsys_sys <= subsys_req_d || subsys_req || !fifo_done;
 
     // rst alone in clk_pcie (with the core user reset: the TX stream converter).
     xpm_cdc_async_rst #(

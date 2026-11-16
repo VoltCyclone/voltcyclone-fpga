@@ -73,7 +73,7 @@ module tb_dst_mux;
     // ---------------- DUTs ----------------
     IfPCIeFifoTlp df[2]();
     pcileech_tlps128_dst_fifo_ref i_ref (.rst(rst), .clk_pcie(clk_pcie), .clk_sys(clk_sys), .tlps_in(rx), .dfifo(df[0]));
-    pcileech_tlps128_dst_fifo     i_new (.rst(rst), .clk_pcie(clk_pcie), .clk_sys(clk_sys), .tlps_in(rx), .dfifo(df[1]));
+    pcileech_tlps128_dst_fifo     i_new (.rst(rst), .rst_fifo(rst), .clk_pcie(clk_pcie), .clk_sys(clk_sys), .tlps_in(rx), .dfifo(df[1]));
 
     wire [255:0] mdout[2];
     wire         mvalid[2];

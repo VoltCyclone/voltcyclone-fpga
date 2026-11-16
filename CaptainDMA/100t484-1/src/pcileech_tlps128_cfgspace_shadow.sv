@@ -14,7 +14,8 @@
 
 module pcileech_tlps128_cfgspace_shadow(
     input                   rst,            // clk_pcie synchronous reset
-    input                   rst_sys,        // clk_sys register: rst of the clk_sys<->clk_pcie FIFOs
+    input                   rst_sys,        // clk_sys register: quarantine of the clk_sys<->clk_pcie FIFOs
+    input                   rst_fifo,       // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
     input                   clk_pcie,
     input                   clk_sys,
     // controls already carried into clk_pcie (dshadow2fifo copies are clk_sys)
@@ -42,7 +43,26 @@ module pcileech_tlps128_cfgspace_shadow(
     // ----------------------------------------------------------------------------
     wire                usb_rx_rden_out;
     wire                usb_rx_wren_out;
+    wire                usb_rx_valid_fifo;
     wire                usb_rx_valid;
+    wire                usb_tx_valid_fifo;
+
+    // FIFO reset no-access window (pcileech_tlps128_fifo_rst_window) for the
+    // two USB FIFOs below (shared reset and clocks). Requests and replies that
+    // meet the window are dropped, as they are dropped by the FIFO reset. A
+    // read that would return no-access-zone output could otherwise turn into
+    // a shadow configuration space write.
+    wire                acc_sys;        // clk_sys:  the FIFOs may be accessed
+    wire                acc_pcie;       // clk_pcie: the FIFOs may be accessed
+    pcileech_tlps128_fifo_rst_window i_rst_window(
+        .rst            ( rst_sys                   ),
+        .clk_sys        ( clk_sys                   ),
+        .clk_pcie       ( clk_pcie                  ),
+        .acc_sys        ( acc_sys                   ),
+        .acc_pcie       ( acc_pcie                  )
+    );
+    assign usb_rx_valid          = usb_rx_valid_fifo && acc_pcie;
+    assign dshadow2fifo.tx_valid = usb_tx_valid_fifo && acc_sys;
     wire                usb_rx_rden = usb_rx_valid && usb_rx_rden_out;
     wire                usb_rx_wren = usb_rx_valid && usb_rx_wren_out;
     wire    [3:0]       usb_rx_be;
@@ -50,16 +70,16 @@ module pcileech_tlps128_cfgspace_shadow(
     wire    [9:0]       usb_rx_addr;
     wire                usb_rx_addr_lo;
     fifo_49_49_clk2 i_fifo_49_49_clk2(
-        .rst            ( rst_sys                   ),
+        .rst            ( rst_fifo                  ),
         .wr_clk         ( clk_sys                   ),
         .rd_clk         ( clk_pcie                  ),
-        .wr_en          ( dshadow2fifo.rx_rden || dshadow2fifo.rx_wren ),
+        .wr_en          ( (dshadow2fifo.rx_rden || dshadow2fifo.rx_wren) && acc_sys ),
         .din            ( {dshadow2fifo.rx_rden, dshadow2fifo.rx_wren, dshadow2fifo.rx_addr_lo, dshadow2fifo.rx_addr, dshadow2fifo.rx_be, dshadow2fifo.rx_data} ),
         .full           (                           ),
-        .rd_en          ( 1'b1                      ),
+        .rd_en          ( acc_pcie                  ),
         .dout           ( {usb_rx_rden_out, usb_rx_wren_out, usb_rx_addr_lo, usb_rx_addr, usb_rx_be, usb_rx_data} ),    
         .empty          (                           ),
-        .valid          ( usb_rx_valid              )
+        .valid          ( usb_rx_valid_fifo         )
     );
 
     // ----------------------------------------------------------------------------
@@ -132,16 +152,16 @@ module pcileech_tlps128_cfgspace_shadow(
     
     // USB REPLY:
     fifo_43_43_clk2 i_fifo_43_43_clk2(
-        .rst            ( rst_sys                   ),
+        .rst            ( rst_fifo                  ),
         .wr_clk         ( clk_pcie                  ),
         .rd_clk         ( clk_sys                   ),
-        .wr_en          ( (bram_rd_tp == `S_SHADOW_CFGSPACE_USB) ),
+        .wr_en          ( (bram_rd_tp == `S_SHADOW_CFGSPACE_USB) && acc_pcie ),
         .din            ( {bram_rd_tag[0], bram_rd_addr, bram_rd_data_z} ),
         .full           (                           ),
-        .rd_en          ( 1'b1                      ),
+        .rd_en          ( acc_sys                   ),
         .dout           ( {dshadow2fifo.tx_addr_lo, dshadow2fifo.tx_addr, dshadow2fifo.tx_data} ),    
         .empty          (                           ),
-        .valid          ( dshadow2fifo.tx_valid     )
+        .valid          ( usb_tx_valid_fifo         )
     );
     
 endmodule

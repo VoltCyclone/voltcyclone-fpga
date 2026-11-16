@@ -66,6 +66,13 @@ def stubs() -> str:
         "RST_ACTIVE_HIGH=0)(input src_arst, input dest_clk, output dest_arst);\nendmodule\n"
     )
     parts.append((HERE / "xpm_cdc_handshake_bbox.sv").read_text())
+    # The subsystem FIFO reset reuses the COM FIFO reset sequencer; lint its
+    # real body (pcileech_com.sv itself pulls in the whole COM path).
+    com = (SRC / "pcileech_com.sv").read_text()
+    seq = re.search(r"^module pcileech_com_fifo_reset\b.*?^endmodule\n", com, re.S | re.M)
+    if not seq:
+        raise SystemExit("pcileech_com_fifo_reset not found in pcileech_com.sv")
+    parts.append(seq.group(0))
     # Wrapper so Verilator can fully elaborate (interface ports cannot sit on
     # the top module); used only for the JSON parameter dump.
     parts.append(
