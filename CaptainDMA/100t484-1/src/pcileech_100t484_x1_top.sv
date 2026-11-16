@@ -67,6 +67,9 @@ module pcileech_100t484_x1_top #(
     // rst is a clk-domain register (never a combinational decode), so it is
     // glitch-free wherever it is used as a reset or crossed into another clock
     // domain. Every other domain derives its own reset from it at the boundary.
+    // It drives every SYS-domain register; synthesis replicates it (all copies
+    // share the same D) so no single net crosses the die (net_clk rw_reg paths).
+    (* max_fanout = 50 *)
     reg             rst = 1'b1;
     reg             rst_cfg_reload = 1'b0;
 
