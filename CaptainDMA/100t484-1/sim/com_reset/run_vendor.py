@@ -78,6 +78,34 @@ MUTANTS = {
         0,
         "COM_EARLY_LIVE_FULL_RESET",
     ),
+    # tx_session: the host output resynchronization stage
+    "resync_no_skip": (
+        "                else if ( s ) begin",
+        "                else if ( 1'b0 ) begin",
+        0,
+        "COM_SESSION_SPLICE",
+    ),
+    "resync_no_rearm": (
+        "            skip <= 1'b1;\n            pad  <= 1'b1;",
+        "            skip <= skip;\n            pad  <= 1'b1;",
+        0,
+        "COM_SESSION_SPLICE",
+    ),
+    "resync_no_pad": (
+        "            skip <= 1'b1;\n            pad  <= 1'b1;",
+        "            skip <= 1'b1;\n            pad  <= 1'b0;",
+        0,
+        "COM_SESSION_",
+    ),
+    # previous wiring: mux words straight into the TX FIFO
+    "resync_bypass": (
+        ".din            ( com_tx_word               ),\n"
+        "        .wr_en          ( com_tx_word_wr && fifo_run_sys && !rst_comtx_fifo ),",
+        ".din            ( dfifo.com_din             ),\n"
+        "        .wr_en          ( dfifo.com_din_wr_en && dfifo.com_din_ready && fifo_run_sys ),",
+        0,
+        "COM_SESSION_",
+    ),
 }
 
 
@@ -111,7 +139,7 @@ def run(
         print(f"COM_MUTANT_KILLED {name}", flush=True)
         return
     errors = re.search(
-        r"(?m)^(?:ERROR:|FATAL_ERROR:|Fatal:)|FT601_MODEL_ERR|\bCOM_(?:RX_|TX_|NO_RECOVERY|READY_|COUNTS|VENDOR_TIMEOUT)",
+        r"(?m)^(?:ERROR:|FATAL_ERROR:|Fatal:)|FT601_MODEL_ERR|\bCOM_(?:RX_|TX_|NO_RECOVERY|READY_|COUNTS|VENDOR_TIMEOUT|SESSION_(?!PASS))",
         output,
     )
     if result.returncode or errors or (require_pass and pass_marker not in output):
@@ -137,7 +165,9 @@ def main() -> None:
         help="stream-forced generic-0 compatibility check",
     )
     parser.add_argument(
-        "--bench", choices=("reset", "early_rx", "sequence"), default="reset"
+        "--bench",
+        choices=("reset", "early_rx", "sequence", "tx_session"),
+        default="reset",
     )
     parser.add_argument(
         "--reset-count-cycles",
@@ -172,6 +202,11 @@ def main() -> None:
         parser.error("RX readiness mutants require --bench early_rx")
     if args.bench == "early_rx" and args.mutant not in (None, *early_mutants):
         parser.error("the existing reset mutants require --bench reset")
+    session_mutants = tuple(m for m in MUTANTS if m.startswith("resync_"))
+    if (args.mutant in session_mutants) != (
+        args.bench == "tx_session" and args.mutant is not None
+    ):
+        parser.error("resync_* mutants run with --bench tx_session, and only they")
     work = args.out.resolve()
     work.mkdir(parents=True, exist_ok=False)
     src = work / "src"
@@ -202,6 +237,7 @@ def main() -> None:
         "early_rx": "tb_com_early_rx",
         "reset": "tb_com_vendor",
         "sequence": "tb_com_sequence",
+        "tx_session": "tb_com_tx_session",
     }[args.bench]
     bench = src / f"{top}.sv"
     shutil.copy2(HERE / bench.name, bench)
@@ -293,6 +329,7 @@ def main() -> None:
                 f"SYS_HALF={sys_half}",
                 f"COM_HALF={com_half}",
                 f"PHASE={phase}",
+                f"SEED={1 + 10 * index + scenario}",
             ):
                 argv += ["-testplusarg", arg]
             run(
@@ -306,6 +343,7 @@ def main() -> None:
                         "early_rx": "COM_EARLY_PASS",
                         "reset": "COM_VENDOR_PASS",
                         "sequence": "COM_SEQ_PASS",
+                        "tx_session": "COM_SESSION_PASS",
                     }[args.bench]
                 ),
             )

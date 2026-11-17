@@ -24,6 +24,10 @@ module tb_com_vendor;
     wire [31:0] pads;
     wire [3:0] be;
     wire wr_n, rd_n, oe_n, siwu_n;
+    localparam [31:0] STATUS = 32'h333333E3;
+    function automatic bit is_idle(input [31:0] d);
+        return d == 32'hFFFFFFEF || d == 32'hFFFFFFFF;
+    endfunction
     IfComToFifo bus();
     assign bus.com_din = tx_data;
     assign bus.com_din_wr_en = tx_write;
@@ -70,7 +74,9 @@ module tb_com_vendor;
     end
     always @(posedge cclk) begin
         #1;
-        if (score && dut.core_din_wr_en) begin
+        // The idle word the COM writes after every TX flush is not scored here
+        // (tb_com_tx_session checks it).
+        if (score && dut.core_din_wr_en && !is_idle(dut.core_din)) begin
             if (tx_expected.size() == 0)
                 $fatal(1, "COM_TX_UNEXPECTED data=%h episode=%0d", dut.core_din, episodes);
             tx_want = tx_expected.pop_front();
@@ -98,8 +104,10 @@ module tb_com_vendor;
         integer n;
         for (n = 0; n < 8; n = n + 1) begin
             // PG057 non-symmetric FIFO ordering: the high slice is read first.
-            word_data[255-n*32 -: 32] = base + n;
-            tx_expected.push_back(base + n);
+            // DW 0 is the mux status DW: all slots non-TLP (tag 3), which the
+            // COM resynchronization stage passes unchanged.
+            word_data[255-n*32 -: 32] = (n == 0) ? STATUS : base + n;
+            tx_expected.push_back((n == 0) ? STATUS : base + n);
         end
         @(negedge clk);
         while (bus.com_din_ready !== 1'b1) @(negedge clk);

@@ -20,6 +20,10 @@ module tb_com_sequence;
     bit score=0;
     integer rx_seen=0, tx_seen=0, target;
     wire [31:0] pads;
+    localparam [31:0] STATUS = 32'h333333E3;
+    function automatic bit is_idle(input [31:0] d);
+        return d == 32'hFFFFFFEF || d == 32'hFFFFFFFF;
+    endfunction
     IfComToFifo bus();
     assign bus.com_din=user_data;
     // Deliberately hold a stale offer during quarantine; DUT must suppress it.
@@ -136,7 +140,8 @@ module tb_com_sequence;
     end
     always @(posedge c0) begin
         #1;
-        if(score && dut.core_din_wr_en) begin
+        // Idle words written after each TX flush are checked by tb_com_tx_session.
+        if(score && dut.core_din_wr_en && !is_idle(dut.core_din)) begin
             if(tx_expected.size()==0) $fatal(1,"COM_SEQ_TX_EXTRA");
             tx_want=tx_expected.pop_front();
             if(dut.core_din !== tx_want) $fatal(1,"COM_SEQ_TX_ORDER");
@@ -172,8 +177,9 @@ module tb_com_sequence;
         @(negedge c0); rx_data=base+1;
         @(negedge c0); rx_valid=0;
         for(n=0;n<8;n=n+1) begin
-            user_data[255-n*32 -:32]=base+n;
-            tx_expected.push_back(base+n);
+            // DW 0 is a mux status DW with non-TLP slots (passed unchanged).
+            user_data[255-n*32 -:32]=(n==0) ? STATUS : base+n;
+            tx_expected.push_back((n==0) ? STATUS : base+n);
         end
         @(negedge clk);
         while(!bus.com_din_ready) @(negedge clk);

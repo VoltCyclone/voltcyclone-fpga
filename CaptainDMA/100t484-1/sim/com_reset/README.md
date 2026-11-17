@@ -8,6 +8,9 @@ It does not qualify the MMCM, physical FT601 protocol or electrical timing.
 Scenarios: running clocks, stopped COM clock, stopped SYS clock. Every run
 checks two COM session aborts, preloaded old TX/RX traffic, a half-packed RX word,
 fresh RX ordering, and TX traffic offered at the first advertised-ready cycle.
+The first DW of each TX test word is a mux status DW with only non-TLP slots,
+which `pcileech_com_tx_resync` passes unchanged. The idle word the COM writes
+after every TX flush is not scored here; `tb_com_tx_session.sv` checks it.
 The stopped-SYS case verifies one enabled, non-full FIFO write of the old
 RX pair before abort, so quarantine cannot accidentally erase the setup.
 Old queued traffic is discarded only at the explicitly declared session abort;
@@ -145,9 +148,76 @@ pin-driven `bypass_rx_ready` observer catches premature accepted pin reads;
 PHY on runtime full. Generic timeout never counts as a killed control.
 
 This is a component/model contract. It does not establish live-link packet
-drain, USB prefix invalidation, physical clock quality, or endpoint-scoped reset/CDC signoff for the complete board. Boot-command
+drain, physical clock quality, or endpoint-scoped reset/CDC signoff for the complete board. Boot-command
 overlap is excluded structurally in MMCM mode: every `rst` resets the MMCM and
 certification takes `FT601_STABLE_CYCLES` (64) SYS edges, longer than the
 boot-word window; `pcileech_com.sv` checks that at elaboration. The sequence
 bench also asserts that each `rst` raises `com_arst` on the next SYS edge
 (`COM_RST_WITHOUT_ARST`), which `rx_ready` and the handshake rely on.
+
+## Host output across COM aborts
+
+`tb_com_tx_session.sv` (`--bench tx_session`) checks what the host parses when a
+COM session abort cuts the TX stream. A COM abort flushes both TX FIFOs and
+resets the PHY, while `pcileech_mux` resets only on the global `rst` and
+resumes mid-stream. `pcileech_com_tx_resync` (end of `pcileech_com.sv`)
+therefore:
+
+- writes one all-idle word after every TX flush, which realigns a host whose
+  32-byte parse was cut mid-word;
+- rewrites TLP DWs without FIRST as idle until a TLP DW with FIRST, so the tail
+  of a cut TLP never follows a prefix the host already holds.
+
+The bench models the SYS side as the mux:
+
+- TLPs of 3-40 DWs with FIRST and LAST, command DWs and idle slots;
+- offer pacing that alternates trickle and burst;
+- the model keeps its position across aborts, as the mux does.
+
+The host side models the LeechCore 2.23+ parser:
+
+- `DeviceFPGA_Session_TlpFrameStep`, with FIRST required because the board
+  reports version 4.14;
+- the `0xE` status scan;
+- byte order as on the wire;
+- one continuous session across every abort, which is the worst case of a host
+  read that spans an abort.
+
+Each run makes 12 aborts at random points, two thirds of them aimed off a word
+boundary. The PHY side pulls about one DW in three. Failures:
+
+| Marker | Failure |
+| --- | --- |
+| `COM_SESSION_SPLICE` | A completed TLP is not exactly one whole TLP. |
+| `COM_SESSION_MALFORMED` | The parser reports a malformed TLP. |
+| `COM_SESSION_MISFRAME` | A host frame starts off the COM word grid. |
+| `COM_SESSION_LOST` | A TLP that was not in flight at an abort is missing, repeated or out of order. |
+| `COM_SESSION_PAD` | An abort is not followed by the idle word before new data. |
+| `COM_SESSION_COVERAGE` | No mid-word cut, no dropped tail, no host restart at FIRST, or too little delivery. |
+
+One case is counted as `SESSION_RESIDUAL`, not failed: the one host frame that
+straddles a mid-word cut.
+
+- The host applies the cut word's remaining slot nibbles to the next DWs,
+  which are the idle word.
+- A TLP whose LAST was in the lost part of that word completes at full length,
+  with idle-word DWs (`FFFFFFEF`, `FFFFFFFF`) in place of its lost DWs.
+- The parser can also report a malformed TLP in that frame.
+- Only a host-side change can repair this. The FPGA cannot recall DWs the
+  host already holds.
+
+The matrix (3 cases × 3 clock settings) must print
+`COM_VENDOR_RUN_PASS cases=9 mutant=None`. Mutants:
+
+| Mutant | Change |
+| --- | --- |
+| `resync_no_skip` | Tails are never dropped. |
+| `resync_no_rearm` | A flush does not re-arm the drop. |
+| `resync_no_pad` | No idle word. |
+| `resync_bypass` | Previous wiring: mux words go straight into the FIFO. |
+
+Each mutant runs on case 0 at the three clock settings with `--matrix`, and
+must fail with a `COM_SESSION_` marker in every run.
+
+The idle word does not help hosts older than LeechCore 2.23. Those parsers
+ignore FIRST, so any cut prefix is joined to the next TLP.

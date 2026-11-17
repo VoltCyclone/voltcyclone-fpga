@@ -306,9 +306,21 @@ module pcileech_com #(
     wire        com_tx_prog_empty;
     
     wire        out_buffer1_almost_full;
+    wire [255:0] com_tx_word;
+    wire        com_tx_word_wr;
 
-    // No writes are offered while the TX FIFO is still held in reset.
-    assign dfifo.com_din_ready  = ~out_buffer1_almost_full & ~rst_comtx_fifo & fifo_run_sys;
+    // Host output resynchronization (see pcileech_com_tx_resync). No writes
+    // are offered while the TX FIFO is still held in reset.
+    pcileech_com_tx_resync i_tx_resync (
+        .clk            ( clk                       ),
+        .flush          ( rst_comtx_fifo | ~fifo_run_sys ),
+        .fifo_af        ( out_buffer1_almost_full   ),
+        .din            ( dfifo.com_din             ),
+        .din_valid      ( dfifo.com_din_wr_en       ),
+        .din_ready      ( dfifo.com_din_ready       ),
+        .dout           ( com_tx_word               ),
+        .dout_valid     ( com_tx_word_wr            )
+    );
     assign led_state_txdata     = com_tx_prog_full ^ led_state_invert;
     
     fifo_32_32_clk1_comtx i_fifo_32_32_clk2_comtx(
@@ -329,8 +341,8 @@ module pcileech_com #(
         .rd_clk         ( clk_c                     ),
         .wr_clk         ( clk                       ),
         .rst            ( rst_comtx_fifo            ),
-        .din            ( dfifo.com_din             ),
-        .wr_en          ( dfifo.com_din_wr_en && fifo_run_sys ),
+        .din            ( com_tx_word               ),
+        .wr_en          ( com_tx_word_wr && fifo_run_sys && !rst_comtx_fifo ),
         .rd_en          ( ~com_tx_almost_full && fifo_run_com ),
         .dout           ( com_tx_data               ),
         .full           (                           ),
@@ -538,4 +550,99 @@ module pcileech_com_fifo_reset #(
 `ifndef SYNTHESIS
     initial if (COUNT_CYCLES < 6) $fatal(1, "COM reset policy requires >=6 cycles");
 `endif
+endmodule
+
+
+
+// ------------------------------------------------------------------------
+// Host output resynchronization after a COM TX flush (R4).
+//
+// A COM session abort (rst, or FT601 clock loss / MMCM unlock through
+// com_arst) flushes both TX FIFOs and resets the PHY, but pcileech_mux keeps
+// its state and resumes where it stopped. Whole 256-bit words can be lost,
+// and the PHY can stop in the middle of a word. The host cannot see the
+// flush, and its parser (LeechCore 2.23+, FPGA 4.13+) would join a TLP
+// prefix sent before the abort to the tail of the same TLP sent after it.
+//
+// Word layout (pcileech_mux): status DW [255:224] = {c1,c0,c3,c2,c5,c4,E,c6},
+// slot j data at [223-32*j -: 32]; nibble cj = {first, last, tag[1:0]},
+// tag 0 = TLP, nibble F with data FFFFFFFF = idle. The host ignores idle
+// slots, drops a TLP prefix at the next FIRST, and ignores TLP DWs without
+// FIRST while it holds no prefix.
+//
+// After every flush this stage:
+// - writes one all-idle word first. If the PHY stopped inside a word, the
+//   host's 32-byte parse is misaligned; its 0xE status scan then skips the
+//   rest of this word and resumes on the next real status DW;
+// - then rewrites every TLP DW as idle until a TLP DW carrying FIRST, so the
+//   tail of a TLP cut by the flush never reaches the host.
+// Words are registered here and only one write is in flight, so the FIFO's
+// almost_full keeps its single-word margin. USB (400 MB/s) is the
+// bottleneck; one word every second SYS cycle is 1.6 GB/s.
+// ------------------------------------------------------------------------
+module pcileech_com_tx_resync(
+    input               clk,
+    input               flush,          // TX path flushed or held (clk registers)
+    input               fifo_af,        // TX FIFO almost full
+    input  [255:0]      din,
+    input               din_valid,      // word taken when din_valid && din_ready
+    output              din_ready,
+    output reg [255:0]  dout,
+    output reg          dout_valid
+);
+    localparam [255:0] IDLE_WORD = {32'hFFFFFFEF, {7{32'hFFFFFFFF}}};
+
+    reg skip;           // drop TLP DWs until a FIRST
+    reg pad;            // idle word owed after a flush
+    initial begin
+        skip       = 1'b1;
+        pad        = 1'b1;
+        dout_valid = 1'b0;
+    end
+
+    assign din_ready = !flush && !fifo_af && !pad && !dout_valid;
+
+    function automatic integer nib(input integer j);    // nibble LSB of slot j
+        case ( j )
+            0: nib = 248;   1: nib = 252;   2: nib = 240;   3: nib = 244;
+            4: nib = 232;   5: nib = 236;   default: nib = 224;
+        endcase
+    endfunction
+
+    reg [255:0] w;
+    reg         s;
+    always @* begin : filter
+        integer j;
+        w = din;
+        s = skip;
+        for ( j = 0; j < 7; j = j + 1 )
+            if ( din[nib(j) +: 2] == 2'b00 ) begin
+                if ( din[nib(j) + 3] )
+                    s = 1'b0;
+                else if ( s ) begin
+                    w[nib(j) +: 4]      = 4'hF;
+                    w[223 - 32*j -: 32] = 32'hFFFFFFFF;
+                end
+            end
+    end
+
+    always @ ( posedge clk ) begin
+        dout_valid <= 1'b0;
+        if ( flush ) begin
+            skip <= 1'b1;
+            pad  <= 1'b1;
+        end
+        else if ( pad ) begin
+            if ( !fifo_af && !dout_valid ) begin
+                dout       <= IDLE_WORD;
+                dout_valid <= 1'b1;
+                pad        <= 1'b0;
+            end
+        end
+        else if ( din_valid && din_ready ) begin
+            dout       <= w;
+            dout_valid <= 1'b1;
+            skip       <= s;
+        end
+    end
 endmodule
