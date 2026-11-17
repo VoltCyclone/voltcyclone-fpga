@@ -38,9 +38,26 @@
 // CASE 0: running clocks, mixed reset sources (host subsystem reset, global
 //         rst, core user reset, core reset).
 // CASE 1: clk_pcie stops (with and without the core user reset), resumes.
-// CASE 2: adjacent host subsystem resets 0..20 clk_sys cycles after the
-//         previous request ended and after the quarantine ended, and a
-//         second request while still in reset.
+// CASE 2: adjacent requests 0..20 clk_sys cycles after the previous request
+//         ended (host subsystem reset, and the undrained core reset) and
+//         after the quarantine ended, and a second request while still in
+//         reset.
+// CASE 3: frequent host subsystem resets during heavy TX, with downstream
+//         stalls of up to 4 us.
+// CASE 4: single-beat static TLPs from cfg_a7 with BAR and host traffic and
+//         host subsystem resets in between.
+//
+// TX path: the host subsystem reset bit goes through the production
+// pcileech_pcie_tx_drain into pcileech_pcie_a7_rst, and the production
+// pcileech_tlps128_sink_mux1 merges the cfg responses, a BAR response model
+// (multi-beat packets, reset by rst_subsys like the BAR controller), the host
+// TX FIFO and the static TLP source. At the mux output:
+//   SUBSYS_TX_CUT      a packet cut (reset or a new first beat before its
+//                      last beat) without an abort reset (global rst, PERST#,
+//                      core reset, core user reset) since its first beat;
+//   SUBSYS_TX_FORM     BAR packet malformed, reordered or duplicated;
+//   SUBSYS_TX_AFTER_IDLE a beat while the mux reports idle;
+//   SUBSYS_DRAIN_STUCK a host request not applied within 30 us.
 `timescale 1ns / 1ps
 `include "pcileech_header.svh"
 
@@ -170,6 +187,16 @@ module tb_subsys_vendor;
     reg rst = 1'b1, perst_n = 1'b1, rst_core = 1'b0, rst_subsys_host = 1'b0;   // clk_sys
     reg user_rst = 1'b1;                                                        // clk_pcie
     wire rst_pcie_src, rst_pcie_n, rst_subsys_sys, rst_subsys_fifo, rst_subsys, rst_clkpcie, rst_cfgword, cfgword_synced;
+    wire soft_rst, tx_stop, tx_idle;
+    pcileech_pcie_tx_drain u_drain(
+        .clk_sys            ( clk_sys           ),
+        .clk_pcie           ( clk_pcie          ),
+        .soft_req           ( rst_subsys_host   ),
+        .soft_rst           ( soft_rst          ),
+        .subsys_rst         ( rst_subsys_sys    ),
+        .tx_stop            ( tx_stop           ),
+        .tx_idle            ( tx_idle           )
+    );
 
     pcileech_pcie_a7_rst u_rst(
         .clk_sys            ( clk_sys           ),
@@ -177,7 +204,7 @@ module tb_subsys_vendor;
         .rst                ( rst               ),
         .pcie_perst_n       ( perst_n           ),
         .pcie_rst_core      ( rst_core          ),
-        .pcie_rst_subsys    ( rst_subsys_host   ),
+        .pcie_rst_subsys    ( soft_rst          ),
         .cfgword_synced     ( cfgword_synced    ),
         .rst_pcie_user      ( user_rst          ),
         .drp_ok             ( 1'b1              ),
@@ -236,7 +263,6 @@ module tb_subsys_vendor;
     assign ctx.cfg_bus_number      = 8'd0;
     assign ctx.cfg_device_number   = 5'd0;
     assign ctx.cfg_function_number = 3'd0;
-    assign tlps_static.tready      = 1'b1;
 
     pcileech_pcie_cfg_a7 u_cfg(
         .rst                ( rst_subsys        ),
@@ -252,7 +278,6 @@ module tb_subsys_vendor;
 
     IfAXIS128 rxs();        // PCIe RX stream: dst FIFO and shadow
     IfAXIS128 cfg_rsp();
-    assign cfg_rsp.tready = 1'b1;
 
     pcileech_tlps128_cfgspace_shadow u_shadow(
         .rst                ( rst_subsys        ),
@@ -289,8 +314,6 @@ module tb_subsys_vendor;
     );
 
     IfAXIS128 txs();        // src FIFO output toward the PCIe TX mux
-    reg  txs_ready = 1'b0;
-    assign txs.tready = txs_ready;
 
     pcileech_tlps128_src_fifo u_src(
         .rst                ( rst_subsys        ),
@@ -399,15 +422,178 @@ module tb_subsys_vendor;
         end
     endtask
 
+    // ------------------------------------------------------------------
+    // BAR response model (mux input 2): pull latency 1, packets of 1-6 beats,
+    // DW = { id[19:0], beats[3:0], beat[3:0], 4'hC }; abandons its packet on
+    // rst_subsys like the BAR controller.
+    // ------------------------------------------------------------------
+    IfAXIS128 bar();
+    reg  [127:0] bar_tdata = 0;
+    reg          bar_tvalid = 0, bar_tlast = 0, bar_first = 0, bar_has = 0;
+    integer      bar_id = 0, bar_len = 0, bar_beat = 0;
+    bit          bar_active = 0;
+    assign bar.tdata    = bar_tdata;
+    assign bar.tkeepdw  = 4'b1111;
+    assign bar.tvalid   = bar_tvalid;
+    assign bar.tlast    = bar_tlast;
+    assign bar.tuser    = { 8'd0, bar_first };
+    assign bar.has_data = bar_has;
+    integer BAR_PCT = 3;
+
     always @ ( posedge clk_pcie ) begin
-        txs_ready <= ($urandom % 100) < 70;
-        if ( txs.tvalid ) begin
-            for ( int i = 0; i < 4; i++ )
-                if ( txs.tkeepdw[i] )
-                    a_dw(txs.tdata[32*i +: 32], txs.tuser[0] && i == 0,
-                         txs.tlast && (i == 3 || !txs.tkeepdw[i+1]));
+        bar_tvalid <= 1'b0;
+        bar_tlast  <= 1'b0;
+        bar_first  <= 1'b0;
+        if ( rst_subsys ) begin
+            if ( bar_active ) bar_id = bar_id + 1;   // abandoned: id not reused
+            bar_active = 1'b0;
+            bar_has   <= 1'b0;
+        end
+        else begin
+            if ( bar.tready && bar_active ) begin
+                bar_tvalid <= 1'b1;
+                bar_first  <= (bar_beat == 0);
+                bar_tlast  <= (bar_beat == bar_len - 1);
+                for ( int i = 0; i < 4; i++ )
+                    bar_tdata[32*i +: 32] <= { bar_id[19:0], bar_len[3:0], bar_beat[3:0], 4'hC };
+                bar_beat = bar_beat + 1;
+                if ( bar_beat == bar_len ) begin
+                    bar_active = 1'b0;
+                    bar_has   <= 1'b0;
+                    bar_id     = bar_id + 1;
+                end
+            end
+            else if ( !bar_active && stim_on && ($urandom % 100) < BAR_PCT ) begin
+                bar_active = 1'b1;
+                bar_len    = 1 + ($urandom % 6);
+                bar_beat   = 0;
+                bar_has   <= 1'b1;
+            end
         end
     end
+
+    // ------------------------------------------------------------------
+    // Production TX mux and the downstream (req_gate) pull
+    // ------------------------------------------------------------------
+    IfAXIS128 txo();
+    reg  txo_ready = 1'b0;
+    integer STALL_PCT = 0;          // CASE 3: chance per cycle of a stall start
+    integer stall = 0;
+    assign txo.tready = txo_ready;
+    pcileech_tlps128_sink_mux1 u_mux(
+        .clk_pcie           ( clk_pcie          ),
+        .rst                ( rst_subsys        ),
+        .stop               ( tx_stop           ),
+        .idle               ( tx_idle           ),
+        .tlps_out           ( txo               ),
+        .tlps_in1           ( cfg_rsp.sink      ),
+        .tlps_in2           ( bar.sink          ),
+        .tlps_in3           ( txs.sink          ),
+        .tlps_in4           ( tlps_static.sink  )
+    );
+
+    // Aborts: resets that also flush req_gate/dst64 (link session abort).
+    integer abort_n = 0;
+    reg     user_rst_q = 1'b0, sys_abort_q = 1'b0, dead_q = 1'b0;
+    always @ ( posedge clk_sys ) begin
+        // a host request applied with clk_pcie dead is a link-session abort;
+        // the bench's own clock model decides whether the clock was dead
+        if ( u_drain.applied_dead && !dead_q && pcie_run )
+            err("SUBSYS_DRAIN_FALSE_DEAD request applied undrained with clk_pcie running");
+        if ( ((rst || rst_core || !perst_n) && !sys_abort_q) || (u_drain.applied_dead && !dead_q && !pcie_run) )
+            abort_n = abort_n + 1;
+        dead_q <= u_drain.applied_dead;
+        sys_abort_q <= rst || rst_core || !perst_n;
+    end
+
+    // Each rst_subsys episode is an abort if an abort reset happened since the
+    // previous episode ended; otherwise it is a host subsystem reset, which
+    // must not cut a packet or let a beat through.
+    bit     tx_in_pkt = 0, tx_resync = 0, rst_is_abort = 0, rst_subsys_q = 0;
+    integer tx_pkt_abort = 0, tx_cut = 0, abort_mark = 0;
+    integer bar_cur = -1, bar_cnt = 0, bar_last_id = -1, bar_deliv = 0, st_deliv = 0;
+    always @ ( posedge clk_pcie ) begin
+        if ( stall > 0 ) stall = stall - 1;
+        else if ( STALL_PCT > 0 && ($urandom % 1000) < STALL_PCT ) stall = 50 + ($urandom % 250);
+        txo_ready <= (stall == 0) && (($urandom % 100) < 70);
+        if ( user_rst && !user_rst_q ) abort_n = abort_n + 1;
+        user_rst_q <= user_rst;
+        if ( rst_subsys && !rst_subsys_q ) begin
+            rst_is_abort = (abort_n != abort_mark);
+            abort_mark   = abort_n;
+            if ( tx_in_pkt ) begin
+                tx_cut = tx_cut + 1;
+                if ( !rst_is_abort ) err("SUBSYS_TX_CUT reset inside a packet without an abort");
+                tx_resync = 1;
+            end
+            tx_in_pkt = 0;
+            bar_cur   = -1;
+        end
+        if ( !rst_subsys && rst_subsys_q ) abort_mark = abort_n;
+        rst_subsys_q = rst_subsys;
+        if ( rst_subsys && txo.tvalid ) begin
+            // a beat pulled before the reset; downstream is reset with it
+            // only for an abort
+            if ( !rst_is_abort ) err("SUBSYS_TX_CUT beat during a host subsystem reset");
+        end
+        else if ( txo.tvalid && tx_resync && !txo.tuser[0] ) begin
+            // tail of a packet cut by an abort: downstream was flushed
+        end
+        else if ( txo.tvalid ) begin
+            tx_resync = 0;
+            if ( tx_idle ) err("SUBSYS_TX_AFTER_IDLE beat while the mux reports idle");
+            if ( txo.tuser[0] ) begin
+                if ( tx_in_pkt ) begin
+                    tx_cut = tx_cut + 1;
+                    if ( tx_pkt_abort == abort_n ) err("SUBSYS_TX_CUT new packet before the last beat");
+                end
+                tx_in_pkt    = 1;
+                tx_pkt_abort = abort_n;
+            end
+            else if ( !tx_in_pkt )
+                err("SUBSYS_TX_ORPHAN beat outside a packet");
+            if ( txo.tdata[3:0] == 4'hF )
+                err("SUBSYS_STATIC_MALFORMED_SENT static TLP armed without a valid second beat");
+            else if ( txo.tdata[3:0] == 4'hE ) begin
+                if ( !txo.tuser[0] || !txo.tlast || txo.tkeepdw != 4'b0001 )
+                    err($sformatf("SUBSYS_TX_FORM static beat keep=%b first=%0d last=%0d", txo.tkeepdw, txo.tuser[0], txo.tlast));
+                if ( txo.tlast ) st_deliv = st_deliv + 1;
+            end
+            else if ( txo.tdata[3:0] == 4'hC ) begin
+                // BAR packet: all four DWs equal
+                if ( txo.tuser[0] ) begin
+                    if ( txo.tdata[31:12] <= bar_last_id && bar_last_id >= 0 )
+                        err($sformatf("SUBSYS_TX_FORM bar id %0d after %0d", txo.tdata[31:12], bar_last_id));
+                    bar_cur = txo.tdata[31:12]; bar_cnt = 0; bar_last_id = bar_cur;
+                end
+                if ( txo.tdata[31:12] != bar_cur || txo.tdata[7:4] != bar_cnt
+                     || txo.tdata[127:96] != txo.tdata[31:0]
+                     || txo.tlast != (bar_cnt == txo.tdata[11:8] - 1) )
+                    err($sformatf("SUBSYS_TX_FORM bar beat %08h cur=%0d cnt=%0d last=%0d", txo.tdata[31:0], bar_cur, bar_cnt, txo.tlast));
+                bar_cnt = bar_cnt + 1;
+                if ( txo.tlast ) bar_deliv = bar_deliv + 1;
+            end
+            else
+                for ( int i = 0; i < 4; i++ )
+                    if ( txo.tkeepdw[i] )
+                        a_dw(txo.tdata[32*i +: 32], txo.tuser[0] && i == 0,
+                             txo.tlast && (i == 3 || !txo.tkeepdw[i+1]));
+            if ( txo.tlast ) tx_in_pkt = 0;
+        end
+    end
+
+    // Every host request is applied (soft_rst rises) within 30 us.
+    realtime drain_since = -1.0;
+    integer  n_soft = 0;
+    always @ ( posedge clk_sys ) begin
+        if ( rst_subsys_host && drain_since < 0.0 ) drain_since = $realtime;
+        if ( soft_rst ) drain_since = -1.0;
+        if ( drain_since >= 0.0 && $realtime - drain_since > 30000.0 ) begin
+            err("SUBSYS_DRAIN_STUCK host request not applied in 30 us");
+            drain_since = -1.0;
+        end
+    end
+    always @ ( posedge soft_rst ) n_soft = n_soft + 1;
 
     // ------------------------------------------------------------------
     // B: PCIe RX packets -> dst FIFO -> host side
@@ -504,6 +690,31 @@ module tb_subsys_vendor;
     // Both use an in-order expected queue.
     // ------------------------------------------------------------------
     typedef struct { integer addr; integer ep; bit req; } exp_t;
+    // cfg_a7 rw write: [13] write, [31:16] byte address (rw: bit 15 set),
+    // mask and value as two byte-swapped 16-bit words.
+    logic [63:0] cfg_wr_q[$];
+    task automatic cfg_write(input [15:0] addr, input [15:0] value, input [15:0] mask);
+        cfg_wr_q.push_back({ value[7:0], value[15:8], mask[7:0], mask[15:8], 16'h8000 | addr, 16'h2000 });
+    endtask
+    // Static TLP: one beat with one DW (DW0 valid+last), tag E in DW0[3:0],
+    // every 64 core clocks, 3 times (the last one of a series is where a mux
+    // left waiting on the static source would stay stuck).
+    task automatic program_static();
+        cfg_write(16'h001C, 16'h0003, 16'h00FF);   // DW0 valid + last
+        cfg_write(16'h001E, 16'h003F, 16'hFFFF);   // sleep mask
+        cfg_write(16'h0022, 16'h0E00, 16'hFF00);   // DW0[7:0] = 0x0E
+        cfg_write(16'h0050, 16'd3,    16'hFFFF);   // count: exhausted between resets
+        cfg_write(16'h0002, 16'h0008, 16'h0008);   // STATIC_TLP_TX_EN (rw bit 19)
+    endtask
+    // Malformed static TLP, tag F: DW0 valid, no last bit in the first half,
+    // DW4 not valid. It must not be armed (an armed one would hang the mux).
+    task automatic program_static_malformed();
+        cfg_write(16'h001C, 16'h0001, 16'hFFFF);   // DW0 valid only, DW4-7 clear
+        cfg_write(16'h001E, 16'h003F, 16'hFFFF);
+        cfg_write(16'h0022, 16'h0F00, 16'hFF00);   // DW0[7:0] = 0x0F
+        cfg_write(16'h0050, 16'd3,    16'hFFFF);
+        cfg_write(16'h0002, 16'h0008, 16'h0008);
+    endtask
     exp_t c_q[$];
     exp_t d_q[$];
     integer c_n = 0, c_deliv = 0, c_gap = 0;
@@ -516,6 +727,11 @@ module tb_subsys_vendor;
         shd_rden     <= 1'b0;
         cfg_rx_rd_en <= ($urandom % 100) < 70;
         if ( c_gap > 0 ) c_gap = c_gap - 1;
+        else if ( cfg_wr_q.size() > 0 ) begin
+            cfg_tx_data  <= cfg_wr_q.pop_front();      // write: no reply
+            cfg_tx_valid <= 1'b1;
+            c_gap = 8;
+        end
         else if ( stim_on && c_n < 30000 ) begin
             exp_t e;
             e.addr = (c_n % 16 == 15) ? 0 : 16'h0100 + c_n;
@@ -636,11 +852,16 @@ module tb_subsys_vendor;
                    user_rst <= 1'b0;
                end
                else begin
-                   // host subsystem reset while the core clock is stopped
+                   // host subsystem reset while the core clock is stopped:
+                   // applied without draining, before the clock returns
+                   integer soft0;
                    pcie_run = 1'b0;
                    wait_us(0.5);
+                   soft0 = n_soft;
                    host_subsys_pulse();
-                   wait_us(0.5 + k * 0.2);
+                   wait_us(0.5);
+                   if ( n_soft == soft0 ) err("SUBSYS_DRAIN_EXPECT_DEAD request not applied with clk_pcie stopped");
+                   wait_us(k * 0.2);
                    pcie_run = 1'b1;
                end
                wait_us(4.0 + ($urandom % 2000) / 1000.0);
@@ -650,8 +871,12 @@ module tb_subsys_vendor;
                // request is spaced from the end of the previous request
                // (u_rst.subsys_req, k < 9) and from the end of the quarantine
                // (rst_subsys_sys, k >= 9).
-               int gaps[19] = '{0, 1, 2, 3, 4, 6, 9, 14, 20, 0, 1, 2, 3, 4, 6, 9, 14, 20, -1};
-               for ( k = 0; k < 19; k++ ) begin
+               // k 18..26 repeat the request-relative spacing with the core
+               // reset, which is not drained (the drain itself spaces host
+               // requests by its stop/idle round trip).
+               int gaps[28] = '{0, 1, 2, 3, 4, 6, 9, 14, 20, 0, 1, 2, 3, 4, 6, 9, 14, 20,
+                                0, 1, 2, 3, 4, 6, 9, 14, 20, -1};
+               for ( k = 0; k < 28; k++ ) begin
                    d = gaps[k];
                    host_subsys_pulse();
                    if ( d < 0 ) begin
@@ -659,13 +884,45 @@ module tb_subsys_vendor;
                        host_subsys_pulse();
                    end
                    else begin
-                       if ( k < 9 ) @ ( negedge u_rst.subsys_req );
-                       else         @ ( negedge rst_subsys_sys );
+                       if ( k < 9 || k >= 18 ) @ ( negedge u_rst.subsys_req );
+                       else                    @ ( negedge rst_subsys_sys );
                        sys_cycles(d);
-                       host_subsys_pulse();
+                       if ( k >= 18 ) begin
+                           rst_core <= 1'b1; sys_cycles(1); rst_core <= 1'b0;
+                       end
+                       else
+                           host_subsys_pulse();
                    end
                    wait_us(4.0 + ($urandom % 2000) / 1000.0);
                end
+           end
+        3: begin
+               BAR_PCT   = 20;
+               STALL_PCT = 4;
+               for ( k = 0; k < 24; k++ ) begin
+                   host_subsys_pulse();
+                   wait_us(1.0 + ($urandom % 3000) / 1000.0);
+               end
+           end
+        4: begin
+               // single-beat static TLPs (cfg_a7) with BAR and host traffic,
+               // host subsystem resets in between (rw is reset with them)
+               BAR_PCT = 10;
+               for ( k = 0; k < 8; k++ ) begin
+                   if ( k % 2 == 0 ) begin
+                       program_static_malformed();
+                       wait_us(2.0);
+                       // disable before reprogramming: program_static makes
+                       // the packet well formed before it rewrites the tag
+                       cfg_write(16'h0002, 16'h0000, 16'h0008);
+                       cfg_write(16'h0050, 16'd0,    16'hFFFF);
+                   end
+                   program_static();
+                   wait_us(3.0 + ($urandom % 3000) / 1000.0);
+                   host_subsys_pulse();
+                   wait_us(4.0);
+               end
+               program_static();
            end
         default: $fatal(1, "SUBSYS_BAD_CASE %0d", CASE);
         endcase
@@ -699,6 +956,10 @@ module tb_subsys_vendor;
         end
         $display("SUBSYS_STATS resets=%0d A sent=%0d deliv=%0d trunc=%0d B sent=%0d deliv=%0d trunc=%0d C sent=%0d deliv=%0d D sent=%0d deliv=%0d",
                  n_resets, a_id, a_deliv, a_trunc, b_id, b_deliv, b_trunc, c_n, c_deliv, d_n, d_deliv);
+        $display("SUBSYS_TX bar_sent=%0d bar_deliv=%0d static_deliv=%0d mux_cut=%0d soft_applied=%0d", bar_id, bar_deliv, st_deliv, tx_cut, n_soft);
+        if ( CASE == 4 && st_deliv < 15 ) err("SUBSYS_LOW_TRAFFIC static");
+        if ( drain_since >= 0.0 ) err("SUBSYS_DRAIN_STUCK request pending at the end");
+        if ( bar_deliv < 20 ) err("SUBSYS_LOW_TRAFFIC bar");
         if ( n_resets < 4 ) err("SUBSYS_FEW_RESETS");
         if ( a_deliv < 50 || b_deliv < 50 || c_deliv < 20 || d_deliv < 20 ) err("SUBSYS_LOW_TRAFFIC");
         foreach ( err_class[k] ) $display("SUBSYS_ERR_CLASS %s count=%0d", k, err_class[k]);

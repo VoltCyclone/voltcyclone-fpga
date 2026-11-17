@@ -32,7 +32,9 @@ module pcileech_pcie_tlp_a7(
     IfShadow2Fifo.shadow    dshadow2fifo,
     input [15:0]            pcie_id,
     IfPCIeSignals.mpro      pcie_ctx,       // read-only PCIe core status
-    input                   rst_pcie_user   // PCIe core user reset (PERST, link down)
+    input                   rst_pcie_user,  // PCIe core user reset (PERST, link down)
+    input                   tx_stop,        // clk_pcie register: select no new TX packet
+    output                  tx_idle         // clk_pcie register: stopped at a packet boundary
     );
     
     IfAXIS128 tlps_bar_rsp();
@@ -107,6 +109,8 @@ module pcileech_pcie_tlp_a7(
     pcileech_tlps128_sink_mux1 i_pcileech_tlps128_sink_mux1(
         .rst            ( rst                           ),
         .clk_pcie       ( clk_pcie                      ),
+        .stop           ( tx_stop                       ),
+        .idle           ( tx_idle                       ),
         .tlps_out       ( tlps_tx                       ),
         .tlps_in1       ( tlps_cfg_rsp.sink             ),
         .tlps_in2       ( tlps_bar_rsp.sink             ),
@@ -451,10 +455,19 @@ endmodule
 // Select the TLP-AXI-STREAM with the highest priority (lowest number) and
 // let it transmit its full packet.
 // Each incoming stream must have latency of 1CLK. 
+//
+// stop: select no new packet; the selected one runs to its last beat. idle is
+// high the cycle after stop is seen with no packet selected (id == 0). A
+// source is pulled only while it is selected (id_next); id == 0 means nothing
+// was pulled in the previous cycle and, with stop, nothing is pulled now, so
+// with idle high no pull response is outstanding either. In reset, nothing
+// is selected.
 // ------------------------------------------------------------------------
 module pcileech_tlps128_sink_mux1 (
     input                       clk_pcie,
     input                       rst,
+    input                       stop,
+    output reg                  idle = 1'b0,
     IfAXIS128.source            tlps_out,
     IfAXIS128.sink              tlps_in1,
     IfAXIS128.sink              tlps_in2,
@@ -495,7 +508,7 @@ module pcileech_tlps128_sink_mux1 (
                                   tlps_in3.has_data ? 3 :
                                   tlps_in4.has_data ? 4 : 0;
     
-    wire [2:0] id_next          = ((id==0) || (tlps_out.tvalid && tlps_out.tlast)) ? id_next_newsel : id;
+    wire [2:0] id_next          = ((id==0) || (tlps_out.tvalid && tlps_out.tlast)) ? (stop ? 3'd0 : id_next_newsel) : id;
     
     assign tlps_in1.tready      = tlps_out.tready && (id_next==1);
     assign tlps_in2.tready      = tlps_out.tready && (id_next==2);
@@ -503,7 +516,8 @@ module pcileech_tlps128_sink_mux1 (
     assign tlps_in4.tready      = tlps_out.tready && (id_next==4);
     
     always @ ( posedge clk_pcie ) begin
-        id <= rst ? 0 : id_next;
+        id   <= rst ? 0 : id_next;
+        idle <= stop && (rst || id == 0);       // id == 0: no pull last cycle, none now
     end
 
 endmodule

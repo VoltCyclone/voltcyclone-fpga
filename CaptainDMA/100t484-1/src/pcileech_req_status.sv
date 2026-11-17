@@ -146,8 +146,17 @@ module pcileech_req_status #(
     reg [PW-1:0] snapshot;
     reg          snapshot_valid;
     initial begin snapshot = {PW{1'b0}}; snapshot_valid = 1'b0; end
+    // dest_req is one synchronizer flop driving the CE of every snapshot bit
+    // (fanout ~450), which the placer can spread out to under 0.3 ns of
+    // slack. Capture one clock later from a replicable register: dest_out
+    // holds its value until the next handshake, which needs the src_rcv
+    // round trip through both 4-stage synchronizers first.
+    (* max_fanout = 64 *) reg snapshot_take;
+    initial snapshot_take = 1'b0;
     always @(posedge clk_sys)
-        if (dest_req) begin
+        snapshot_take <= dest_req;
+    always @(posedge clk_sys)
+        if (snapshot_take) begin
             snapshot       <= dest_out;
             snapshot_valid <= 1'b1;
         end

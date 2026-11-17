@@ -80,13 +80,28 @@ module pcileech_pcie_a7 #(
     wire rst_req;                       // clk_pcie: link session abort (requester tracker, src64, dst64)
     wire drp_ok;                        // clk_sys: reset-held DRP plan applied (gates rst_pcie_n)
 
+    // Host subsystem reset (soft reset on a live link): first stop the TX mux
+    // at a packet boundary, then reset (pcileech_pcie_tx_drain).
+    wire pcie_rst_subsys_drained;       // clk_sys register
+    wire tx_stop;                       // clk_pcie
+    wire tx_idle;                       // clk_pcie register
+    pcileech_pcie_tx_drain i_pcileech_pcie_tx_drain(
+        .clk_sys            ( clk_sys                   ),
+        .clk_pcie           ( clk_pcie                  ),
+        .soft_req           ( dfifo_pcie.pcie_rst_subsys ),
+        .soft_rst           ( pcie_rst_subsys_drained   ),
+        .subsys_rst         ( rst_subsys_sys            ),
+        .tx_stop            ( tx_stop                   ),
+        .tx_idle            ( tx_idle                   )
+    );
+
     pcileech_pcie_a7_rst i_pcileech_pcie_a7_rst(
         .clk_sys            ( clk_sys                   ),
         .clk_pcie           ( clk_pcie                  ),
         .rst                ( rst                       ),
         .pcie_perst_n       ( pcie_perst_n              ),
         .pcie_rst_core      ( dfifo_pcie.pcie_rst_core  ),
-        .pcie_rst_subsys    ( dfifo_pcie.pcie_rst_subsys ),
+        .pcie_rst_subsys    ( pcie_rst_subsys_drained ),
         .cfgword_synced     ( cfgword_synced            ),
         .rst_pcie_user      ( rst_pcie_user             ),
         .drp_ok             ( drp_ok                    ),
@@ -184,16 +199,19 @@ module pcileech_pcie_a7 #(
         .dshadow2fifo               ( dshadow2fifo              ),
         .pcie_id                    ( pcie_id                   ),   // <- [15:0]
         .pcie_ctx                   ( ctx                       ),
-        .rst_pcie_user              ( rst_pcie_user             )
+        .rst_pcie_user              ( rst_pcie_user             ),
+        .tx_stop                    ( tx_stop                   ),
+        .tx_idle                    ( tx_idle                   )
     );
     
     // TX stream converter reset: global rst, and the core user reset (PERST#,
     // link down, core reset). The core drops its transmit interface then, so a
     // queued beat or the retained upper half of a beat must not reach the new
     // link session. Both terms are clk_pcie registers (synchronous reset).
-    // The host subsystem reset (pcie_rst_subsys) on a live link deliberately
-    // does not flush it: the upstream TX mux resets mid-packet then, so that
-    // case needs a packet-boundary policy (see pcileech_tlps128_dst64).
+    // The host subsystem reset (pcie_rst_subsys) on a live link does not flush
+    // it: pcileech_pcie_tx_drain applies that reset only once the upstream TX
+    // mux has stopped at a packet boundary, so every packet handed to the
+    // converter is complete and drains to the core on its own.
     pcileech_tlps128_dst64 i_pcileech_tlps128_dst64(
         .rst                        ( rst_clkpcie || rst_pcie_user ),
         .clk_pcie                   ( clk_pcie                  ),
@@ -694,14 +712,10 @@ endmodule
 // Convert a 128-bit TLP-AXI-STREAM to a 64-bit PCIe core AXI-STREAM.
 //
 // rst (in pcileech_pcie_a7: rst or the core user reset) flushes the queue.
-// KNOWN LIMITATION (inherited, not fixed here): the host subsystem reset
-// (pcie_rst_subsys) on a live link does not reset this converter, while the
-// upstream TX mux and sources do. Queued beats keep draining after it; if the
-// subsystem reset cut a packet before its last beat was queued, the remaining
-// words are never sent and the next packet follows the unterminated one.
-// Resetting here as well would not fix that: it would drop the tail of a
-// packet the core may already be transmitting. A correct soft reset needs a
-// packet-boundary policy (finish or drop whole packets on both sides).
+// The host subsystem reset (pcie_rst_subsys) on a live link does not reset
+// this converter. It resets the upstream TX mux and sources only after
+// pcileech_pcie_tx_drain has stopped the mux at a packet boundary, so queued
+// beats always end with a last beat and keep draining to the core.
 // ------------------------------------------------------------------------
 module pcileech_tlps128_dst64(
     input                   rst,
@@ -1160,4 +1174,147 @@ module pcileech_pcie_a7_rst(
         .dest_arst          ( rst_clkpcie           )
     );
 
+endmodule
+
+
+
+// ------------------------------------------------------------------------
+// Host subsystem reset on a live link: stop TX at a packet boundary first.
+//
+// soft_req is the host's pcie_rst_subsys bit (clk_sys register, a level the
+// host sets and clears). The subsystem reset resets the TX mux and its
+// sources, but not req_gate, dst64 or the core, which may hold part of the
+// selected packet. Applied directly, it could cut that packet: the converter
+// would never see its last beat and the next packet would follow the
+// unterminated one.
+//
+// So a request first raises tx_stop: the mux (pcileech_tlps128_sink_mux1)
+// selects no new packet and lets the selected one run to its last beat; then
+// tx_idle rises, with no pull outstanding. Only then is soft_rst raised
+// toward pcileech_pcie_a7_rst. tx_stop stays high until soft_rst is applied
+// and the host has released the bit, so no packet starts between the idle
+// report and the reset. soft_rst is high for at least one cycle per request,
+// even if the host bit was a single cycle.
+//
+// No timeout on a live link: the selected packet is complete in its source
+// (the host TX FIFO releases a packet only once its last word is in) and only
+// waits for the core to accept it. Cutting it on a timeout is exactly the
+// failure this avoids. If the link goes down instead, the core user reset (an
+// immediate link-session abort that also flushes dst64 and the gate) resets
+// the mux, which then reports idle. Global rst, PERST# and the core reset are
+// not drained: they abort the link session.
+//
+// Dead core clock: with clk_pcie stopped (refclk loss, slot powered down)
+// nothing can be transmitted and idle cannot be reported, so the reset is
+// applied without waiting once no clk_pcie edge has been seen for
+// DEAD_CYCLES clk_sys cycles. That case is a link-session abort, as for the
+// core user reset that accompanies it.
+//
+// tx_stop drops only once the reset is in effect (subsys_rst, the clk_sys
+// subsystem reset, high), so it reaches clk_pcie after the mux reset.
+//
+// Four-phase: a new request starts only after the previous idle report has
+// fallen, so a stale idle is never taken for the new stop.
+// ------------------------------------------------------------------------
+module pcileech_pcie_tx_drain #(
+    parameter integer       DEAD_CYCLES = 64    // clk_sys cycles without a clk_pcie edge
+) (
+    input                   clk_sys,
+    input                   clk_pcie,
+    input                   soft_req,       // clk_sys register: host subsystem reset bit
+    output reg              soft_rst = 1'b0,// clk_sys register: -> pcileech_pcie_a7_rst.pcie_rst_subsys
+    input                   subsys_rst,     // clk_sys register: subsystem reset in effect
+    output                  tx_stop,        // clk_pcie: -> TX mux
+    input                   tx_idle         // clk_pcie register: TX mux stopped
+    );
+    // clk_pcie liveness: a toggle crossed into clk_sys.
+    reg         pcie_tog = 1'b0;
+    always @ ( posedge clk_pcie )
+        pcie_tog <= ~pcie_tog;
+    wire        pcie_tog_sys;
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // pcie_tog is a register
+    ) i_cdc_tog (
+        .src_clk            ( clk_pcie              ),
+        .src_in             ( pcie_tog              ),
+        .dest_clk           ( clk_sys               ),
+        .dest_out           ( pcie_tog_sys          )
+    );
+    reg         pcie_tog_q = 1'b0;
+    reg  [6:0]  quiet = 7'd0;
+    reg         pcie_dead = 1'b0;
+    reg         applied_dead = 1'b0;    // diagnostic: applied without draining
+    always @ ( posedge clk_sys ) begin
+        pcie_tog_q <= pcie_tog_sys;
+        if ( pcie_tog_sys != pcie_tog_q )
+            quiet <= 7'd0;
+        else if ( !pcie_dead )
+            quiet <= quiet + 7'd1;
+        pcie_dead <= (pcie_tog_sys == pcie_tog_q) && (quiet >= 7'(DEAD_CYCLES - 1));
+    end
+`ifndef SYNTHESIS
+    initial if ( DEAD_CYCLES < 8 || DEAD_CYCLES > 120 ) $fatal(1, "pcileech_pcie_tx_drain: DEAD_CYCLES out of range");
+`endif
+    localparam [1:0] S_IDLE  = 2'd0;        // no request
+    localparam [1:0] S_STOP  = 2'd1;        // tx_stop raised, waiting for idle
+    localparam [1:0] S_APPLY = 2'd2;        // soft_rst applied
+    reg  [1:0]  state    = S_IDLE;
+    reg         stop_sys = 1'b0;
+    wire        idle_sys;
+
+    always @ ( posedge clk_sys )
+        case ( state )
+            S_IDLE:
+                if ( soft_req && (!idle_sys || pcie_dead) ) begin
+                    state    <= pcie_dead ? S_APPLY : S_STOP;
+                    stop_sys <= 1'b1;
+                    soft_rst <= pcie_dead;
+                    applied_dead <= pcie_dead;
+                end
+            S_STOP:
+                if ( idle_sys || pcie_dead ) begin
+                    state    <= S_APPLY;
+                    soft_rst <= 1'b1;
+                    applied_dead <= !idle_sys;
+                end
+            S_APPLY:
+                if ( !soft_req && subsys_rst ) begin
+                    state    <= S_IDLE;
+                    soft_rst <= 1'b0;
+                    stop_sys <= 1'b0;
+                    applied_dead <= 1'b0;
+                end
+            default: begin
+                state    <= S_IDLE;
+                soft_rst <= 1'b0;
+                stop_sys <= 1'b0;
+            end
+        endcase
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // stop_sys is a register
+    ) i_cdc_stop (
+        .src_clk            ( clk_sys               ),
+        .src_in             ( stop_sys              ),
+        .dest_clk           ( clk_pcie              ),
+        .dest_out           ( tx_stop               )
+    );
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // tx_idle is a register
+    ) i_cdc_idle (
+        .src_clk            ( clk_pcie              ),
+        .src_in             ( tx_idle               ),
+        .dest_clk           ( clk_sys               ),
+        .dest_out           ( idle_sys              )
+    );
 endmodule

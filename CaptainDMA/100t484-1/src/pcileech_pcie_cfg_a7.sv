@@ -216,6 +216,9 @@ module pcileech_pcie_cfg_a7(
             
             rwi_cfg_mgmt_rd_en <= 1'b0;
             rwi_cfg_mgmt_wr_en <= 1'b0;
+            rwi_tlp_static_valid    <= 1'b0;    // static TLP source: nothing armed
+            rwi_tlp_static_2nd      <= 1'b1;
+            rwi_tlp_static_has_data <= 1'b0;
     
             // MAGIC
             rw[15:0]    <= 16'h6745;                // +000:
@@ -324,11 +327,21 @@ module pcileech_pcie_cfg_a7(
         rw[(256+32*1+00)+:8], rw[(256+32*1+08)+:8], rw[(256+32*1+16)+:8], rw[(256+32*1+24)+:8],   // STATIC TLP DWORD1
         rw[(256+32*0+00)+:8], rw[(256+32*0+08)+:8], rw[(256+32*0+16)+:8], rw[(256+32*0+24)+:8]    // STATIC TLP DWORD0
     };
-    assign tlps_static.tkeepdw              = rwi_tlp_static_2nd ? { rw[224+2*7], rw[224+2*6], rw[224+2*5], rw[224+2*4] } : { rw[224+2*3], rw[224+2*2], rw[224+2*1], rw[224+2*0] };
+    // A presented beat always carries DW0 and always has tvalid: the mux
+    // waits for tvalid && tlast of a selected packet, so a beat whose valid
+    // bits were changed by the host after arming must still complete the
+    // handshake (the packet's content is then the host's to get right).
+    assign tlps_static.tkeepdw              = rwi_tlp_static_2nd ? { rw[224+2*7], rw[224+2*6], rw[224+2*5], 1'b1 } : { rw[224+2*3], rw[224+2*2], rw[224+2*1], 1'b1 };
     assign tlps_static.tlast                = rwi_tlp_static_2nd || rw[224+2*3+1] || rw[224+2*2+1] || rw[224+2*1+1] || rw[224+2*0+1];
     assign tlps_static.tuser[0]             = !rwi_tlp_static_2nd;
-    assign tlps_static.tvalid               = rwi_tlp_static_valid && tlps_static.tkeepdw[0];
-    assign tlps_static.has_data             = rwi_tlp_static_has_data;
+    assign tlps_static.tvalid               = rwi_tlp_static_valid;
+    // Arm only a well-formed packet: DW0 valid, and either a last bit in the
+    // first half or DW4 valid for the second beat.
+    wire   rwi_tlp_static_wellformed        = rw[224+2*0] && (rw[224+2*3+1] || rw[224+2*2+1] || rw[224+2*1+1] || rw[224+2*0+1] || rw[224+2*4]);
+    // A packet is available until its last beat is presented. The TX mux
+    // re-selects at a last beat when has_data is high, so has_data must be
+    // low in that cycle, or the mux would wait for a packet that never comes.
+    assign tlps_static.has_data             = rwi_tlp_static_has_data && !(rwi_tlp_static_valid && tlps_static.tlast);
         
     assign pcie_id                          = ro[79:64];
     
@@ -417,7 +430,14 @@ module pcileech_pcie_cfg_a7(
                     end
                     
                 // STATIC_TLP TRANSMIT
-                if ( (rwi_tlp_static_valid && rwi_tlp_static_2nd) || ~rw[RWPOS_CFG_STATIC_TLP_TX_EN] ) begin    // STATE (3)
+                // STATE (3): the beat with tlast was presented. A packet that
+                // ends in its first beat ends there (no empty second pull).
+                // An armed packet is never withdrawn: the TX mux may already
+                // have selected it and would then wait for it forever. So
+                // clearing TX_EN (by the host, or after the last of COUNT)
+                // stops new packets only, and the arming state below needs
+                // TX_EN and no packet already armed.
+                if ( rwi_tlp_static_valid && tlps_static.tlast ) begin    // STATE (3)
                     rwi_tlp_static_valid    <= 1'b0;
                     rwi_tlp_static_has_data <= 1'b0;
                 end
@@ -429,7 +449,7 @@ module pcileech_pcie_cfg_a7(
                      rwi_tlp_static_valid   <= 1'b1;
                      rwi_tlp_static_2nd     <= 1'b1;
                 end
-                else if ( ((tickcount64[0+:16] & rw[240+:16]) == rw[240+:16]) & (rw[640+:32] > 0) & rw[224+2*0] ) begin   // IDLE STATE (0)
+                else if ( !rwi_tlp_static_has_data & rw[RWPOS_CFG_STATIC_TLP_TX_EN] & ((tickcount64[0+:16] & rw[240+:16]) == rw[240+:16]) & (rw[640+:32] > 0) & rwi_tlp_static_wellformed ) begin   // IDLE STATE (0)
                     rwi_tlp_static_has_data <= 1'b1;
                     rwi_tlp_static_2nd      <= 1'b1;
                     rw[640+:32] <= rw[640+:32] - 1;     // count - 1

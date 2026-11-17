@@ -52,6 +52,34 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str]], int, str]] = {
     # no longer reset the FIFOs and host TX packets are lost.
     "release_before_pcie": (A7, [("wire subsys_req_d = rst || pcie_rst_subsys || rst_subsys_pcie_sys;",
         "wire subsys_req_d = rst || pcie_rst_subsys;")], 0, "SUBSYS_A_LOST"),
+    # Soft reset applied at once, without stopping TX: packets are cut.
+    "drain_no_stop": (A7, [("state    <= pcie_dead ? S_APPLY : S_STOP;", "state    <= S_APPLY;"),
+        ("soft_rst <= pcie_dead;", "soft_rst <= 1'b1;")], 3, "SUBSYS_TX_CUT"),
+    # Mux keeps selecting new packets while stopped.
+    "mux_ignores_stop": ("pcileech_pcie_tlp_a7.sv", [("? (stop ? 3'd0 : id_next_newsel) : id;",
+        "? id_next_newsel : id;")], 3, "SUBSYS_TX_"),
+    # Drain applies the reset as soon as stop is raised.
+    "drain_skips_idle": (A7, [("if ( idle_sys || pcie_dead ) begin", "if ( 1'b1 ) begin")], 3, "SUBSYS_DRAIN_FALSE_DEAD"),
+    # Old static TLP end: has_data stays up at the last beat and the packet
+    # ends only on its second half, so the mux re-selects and waits.
+    "static_old_end": (CFG, [("rwi_tlp_static_has_data && !(rwi_tlp_static_valid && tlps_static.tlast);",
+        "rwi_tlp_static_has_data;"),
+        ("if ( rwi_tlp_static_valid && tlps_static.tlast ) begin    // STATE (3)",
+         "if ( (rwi_tlp_static_valid && rwi_tlp_static_2nd) || ~rw[RWPOS_CFG_STATIC_TLP_TX_EN] ) begin")], 4, "SUBSYS_FAIL"),
+    # Old static TLP disable: withdraw an armed packet when TX_EN clears
+    # (also right after arming the last of COUNT).
+    "static_withdraw_on_disable": (CFG, [("if ( rwi_tlp_static_valid && tlps_static.tlast ) begin    // STATE (3)",
+        "if ( (rwi_tlp_static_valid && tlps_static.tlast) || ~rw[RWPOS_CFG_STATIC_TLP_TX_EN] ) begin")], 4, "SUBSYS_FAIL"),
+    # Arm a static TLP without checking its second beat.
+    "static_arm_unchecked": (CFG, [("& rwi_tlp_static_wellformed ) begin", "& rw[224+2*0] ) begin")], 4, "SUBSYS_STATIC_MALFORMED_SENT"),
+    # Old arming and tvalid gated by the DW0 valid bit: the malformed packet
+    # is armed, its second beat never has tvalid, and the mux waits forever.
+    "static_old_valid": (CFG, [("& rwi_tlp_static_wellformed ) begin", "& rw[224+2*0] ) begin"),
+        ("assign tlps_static.tvalid               = rwi_tlp_static_valid;",
+         "assign tlps_static.tvalid               = rwi_tlp_static_valid && rw[224+2*(rwi_tlp_static_2nd ? 4 : 0)];")], 4, "SUBSYS_FAIL"),
+    # Host request with clk_pcie dead waits for the clock.
+    "drain_ignores_dead_clock": (A7, [("pcie_dead <= (pcie_tog_sys == pcie_tog_q) && (quiet >= 7'(DEAD_CYCLES - 1));",
+        "pcie_dead <= 1'b0;")], 1, "SUBSYS_DRAIN_EXPECT_DEAD"),
     "cfg_tx_write_ungated": (CFG, [(".wr_en          ( dfifo.tx_valid && acc_sys ),",
         ".wr_en          ( dfifo.tx_valid ),")], 0, "SUBSYS_NOACCESS cfg_tx"),
     "cfg_rx_read_ungated": (CFG, [(".rd_en          ( dfifo.rx_rd_en && acc_sys ),",
@@ -79,7 +107,7 @@ def run(argv, work: Path, name: str, expect: str | None = None) -> str:
         )
     out = (work / f"{name}.log").read_text(errors="replace")
     if expect is not None:
-        if re.search(r"(?m)^ERROR:", out) or expect not in out:
+        if re.search(r"(?m)^ERROR:", out) or expect not in out or "SUBSYS_PASS" in out:
             raise RuntimeError(f"{name}: mutant survived or failed wrongly\n{out[-5000:]}")
         print(f"SUBSYS_MUTANT_KILLED {name} ({expect})", flush=True)
         return out
@@ -96,7 +124,7 @@ def main() -> None:
     ap.add_argument("--board", type=Path, required=True)
     ap.add_argument("--models", type=Path, required=True, help="export-models.tcl output")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--case", type=int, choices=(0, 1, 2))
+    ap.add_argument("--case", type=int, choices=(0, 1, 2, 3, 4))
     ap.add_argument("--matrix", action="store_true", help="three clock rate/phase settings")
     ap.add_argument("--keep-going", action="store_true", help="report every case, then fail")
     ap.add_argument("--mutant", choices=tuple(MUTANTS))
@@ -144,10 +172,24 @@ def main() -> None:
     run([vbin / "xelab", "-mt", "4", "-L", "xpm", "-L", "unisims_ver", "-L", "unimacro_ver",
          "work.tb_subsys_vendor", "work.glbl", "-s", "subsys"], work, "elaborate")
 
-    cases = [MUTANTS[args.mutant][2]] if args.mutant else ([args.case] if args.case is not None else [0, 1, 2])
+    cases = [MUTANTS[args.mutant][2]] if args.mutant else ([args.case] if args.case is not None else [0, 1, 2, 3, 4])
     clocks = [(5.0, 8.0, 1.3)]
-    if args.matrix:
+    if args.matrix or args.mutant:
         clocks += [(5.0, 4.0, 2.7), (5.0, 6.0, 0.9)]   # clk_pcie 125 MHz, 83 MHz
+    if args.mutant:
+        # A mutant is killed if any clock setting catches it.
+        case = cases[0]
+        for ci, (sh, ph, phase) in enumerate(clocks):
+            argv = [vbin / "xsim", "subsys", "-runall"]
+            for a in (f"CASE={case}", f"SYS_HALF={sh}", f"PCIE_HALF={ph}", f"PHASE={phase}", f"SEED={11 + ci}"):
+                argv += ["-testplusarg", a]
+            try:
+                run(argv, work, f"case-{case}-clock-{ci}", expect=MUTANTS[args.mutant][3])
+                print(f"SUBSYS_RUN_PASS mutant={args.mutant}", flush=True)
+                return
+            except RuntimeError:
+                print(f"SUBSYS_MUTANT_SURVIVED_CLOCK {ci}", flush=True)
+        raise SystemExit(f"SUBSYS_MUTANT_SURVIVED {args.mutant}")
     failed = []
     for ci, (sh, ph, phase) in enumerate(clocks):
         for case in cases:
@@ -156,7 +198,7 @@ def main() -> None:
                 argv += ["-testplusarg", a]
             name = f"case-{case}-clock-{ci}"
             try:
-                run(argv, work, name, expect=MUTANTS[args.mutant][3] if args.mutant else None)
+                run(argv, work, name)
             except RuntimeError as exc:
                 if not args.keep_going:
                     raise
