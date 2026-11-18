@@ -10,7 +10,19 @@
 `timescale 1ns / 1ps
 `include "pcileech_header.svh"
 
-module pcileech_pcie_a7(
+// R1 requester-tracking plan values. They have no usable defaults: each
+// receiving module fails elaboration until the generated plan binds them
+// (RequesterTrackingPlan, passed down from the top as generics).
+module pcileech_pcie_a7 #(
+    parameter longint       REQ_CLK_PCIE_HZ         = 0,        // core user clock (exact-core readback)
+    parameter integer       DRP_PLAN_BOUND          = 0,        // must be 1
+    parameter [8:0]         DRP_PLAN_ADDR           = 9'h019,
+    parameter [15:0]        DRP_PLAN_MASK           = 16'h0000,
+    parameter [15:0]        DRP_PLAN_VALUE          = 16'h0000,
+    parameter [15:0]        DRP_PLAN_CHECK_MASK     = 16'h0000,  // generator-owned field bits checked
+    parameter [15:0]        DRP_PLAN_BASE_EXPECT    = 16'h0000,
+    parameter integer       DRP_RDY_TIMEOUT_CYCLES  = 0         // 16..65535 clk_sys cycles
+) (
     input                   clk_sys,
     input                   rst,
 
@@ -40,8 +52,10 @@ module pcileech_pcie_a7(
     IfPCIeSignals           ctx();
     IfPCIeTlpRxTx           tlp_tx();
     IfPCIeTlpRxTx           tlp_rx();
-    IfAXIS128               tlps_tx();
-    IfAXIS128               tlps_rx();
+    IfAXIS128               tlps_tx();          // merged TX from pcileech_pcie_tlp_a7 -> req_gate
+    IfAXIS128               tlps_tx_gated();    // req_gate -> dst64
+    IfAXIS128               tlps_rx_core();     // src64 -> req_rx_cpl
+    IfAXIS128               tlps_rx();          // req_rx_cpl -> pcileech_pcie_tlp_a7
     
     IfAXIS128               tlps_static();       // static tlp transmit from cfg->tlp
     wire [15:0]             pcie_id;
@@ -50,10 +64,78 @@ module pcileech_pcie_a7(
     // system interface
     wire pcie_clk_c;
     wire clk_pcie;
-    wire rst_pcie_user;
-    wire rst_subsys = rst || rst_pcie_user || dfifo_pcie.pcie_rst_subsys;
-    wire rst_pcie = rst || ~pcie_perst_n || dfifo_pcie.pcie_rst_core;
-       
+    wire rst_pcie_user;                 // core user reset (PERST, link down); clk_pcie, registered in the IP
+
+    // ----------------------------------------------------------------------------
+    // RESETS - one per clock domain (see pcileech_pcie_a7_rst below).
+    // ----------------------------------------------------------------------------
+    wire rst_pcie_n;                    // -> core sys_rst_n
+    wire rst_subsys_sys;                // clk_sys subsystem reset; quarantines the clk_sys<->clk_pcie FIFOs
+    wire rst_subsys_fifo;               // clk_sys register: async rst of the clk_sys<->clk_pcie FIFOs
+    wire rst_subsys;                    // clk_pcie subsystem reset
+    wire rst_clkpcie;                   // rst in clk_pcie
+    wire rst_cfgword;                   // clk_sys: clears the control-word delivery gate
+    wire cfgword_synced;
+    wire rst_pcie_src;                  // clk_sys: rst || ~perst_n || pcie_rst_core
+    wire rst_req;                       // clk_pcie: link session abort (requester tracker, src64, dst64)
+    wire drp_ok;                        // clk_sys: reset-held DRP plan applied (gates rst_pcie_n)
+
+    // Host subsystem reset (soft reset on a live link): first stop the TX mux
+    // at a packet boundary, then reset (pcileech_pcie_tx_drain).
+    wire pcie_rst_subsys_drained;       // clk_sys register
+    wire tx_stop;                       // clk_pcie
+    wire tx_idle;                       // clk_pcie register
+    pcileech_pcie_tx_drain i_pcileech_pcie_tx_drain(
+        .clk_sys            ( clk_sys                   ),
+        .clk_pcie           ( clk_pcie                  ),
+        .soft_req           ( dfifo_pcie.pcie_rst_subsys ),
+        .soft_rst           ( pcie_rst_subsys_drained   ),
+        .subsys_rst         ( rst_subsys_sys            ),
+        .tx_stop            ( tx_stop                   ),
+        .tx_idle            ( tx_idle                   )
+    );
+
+    pcileech_pcie_a7_rst i_pcileech_pcie_a7_rst(
+        .clk_sys            ( clk_sys                   ),
+        .clk_pcie           ( clk_pcie                  ),
+        .rst                ( rst                       ),
+        .pcie_perst_n       ( pcie_perst_n              ),
+        .pcie_rst_core      ( dfifo_pcie.pcie_rst_core  ),
+        .pcie_rst_subsys    ( pcie_rst_subsys_drained ),
+        .cfgword_synced     ( cfgword_synced            ),
+        .rst_pcie_user      ( rst_pcie_user             ),
+        .drp_ok             ( drp_ok                    ),
+        .rst_pcie_src       ( rst_pcie_src              ),
+        .rst_pcie_n         ( rst_pcie_n                ),
+        .rst_subsys_sys     ( rst_subsys_sys            ),
+        .rst_subsys_fifo    ( rst_subsys_fifo           ),
+        .rst_subsys         ( rst_subsys                ),
+        .rst_clkpcie        ( rst_clkpcie               ),
+        .rst_cfgword        ( rst_cfgword               )
+    );
+
+    // ----------------------------------------------------------------------------
+    // SHADOW/BAR/FILTER CONTROL WORD clk_sys -> clk_pcie
+    // The six bits change together on host writes, so they cross as one
+    // coherent word through a handshake, never bit by bit.
+    // rst_src (rst_cfgword) covers every reset that releases the clk_pcie
+    // consumers: rst, host subsystem reset, core reset, and - through a
+    // request/ack handshake in pcileech_pcie_a7_rst - the core user reset. After
+    // any of them the consumers again wait for the word current at release.
+    // ----------------------------------------------------------------------------
+    wire pcie_cfgtlp_en, pcie_cfgtlp_zero, pcie_cfgtlp_filter, pcie_bar_en, pcie_cfgtlp_wren, pcie_alltlp_filter;
+
+    pcileech_pcie_cfgword_cdc i_pcileech_pcie_cfgword_cdc(
+        .clk_src            ( clk_sys                   ),
+        .rst_src            ( rst_cfgword               ),
+        .src_word           ( { dshadow2fifo.alltlp_filter, dshadow2fifo.cfgtlp_wren, dshadow2fifo.bar_en,
+                                dshadow2fifo.cfgtlp_filter, dshadow2fifo.cfgtlp_zero, dshadow2fifo.cfgtlp_en } ),
+        .src_synced         ( cfgword_synced            ),
+        .clk_dst            ( clk_pcie                  ),
+        .dst_word           ( { pcie_alltlp_filter, pcie_cfgtlp_wren, pcie_bar_en,
+                                pcie_cfgtlp_filter, pcie_cfgtlp_zero, pcie_cfgtlp_en } )
+    );
+
     // Buffer for differential system clock
     IBUFDS_GTE2 refclk_ibuf (.O(pcie_clk_c), .ODIV2(), .I(pcie_clk_p), .CEB(1'b0), .IB(pcie_clk_n));
     
@@ -72,6 +154,8 @@ module pcileech_pcie_a7(
     
     pcileech_pcie_cfg_a7 i_pcileech_pcie_cfg_a7(
         .rst                        ( rst_subsys                ),
+        .rst_sys                    ( rst_subsys_sys            ),
+        .rst_fifo                   ( rst_subsys_fifo           ),
         .clk_sys                    ( clk_sys                   ),
         .clk_pcie                   ( clk_pcie                  ),
         .dfifo                      ( dfifo_cfg                 ),        
@@ -84,33 +168,365 @@ module pcileech_pcie_a7(
     // PCIe TLP RX/TX <--> FIFO below
     // ----------------------------------------------------------------------------
     
+    // src64 shares the link-session reset with req_rx_cpl (review F1): a
+    // subsystem reset must not cut a packet between the converter and the
+    // completion parser, or the parser's framing and the table drift apart.
+    // Host-side RX consumers still reset on rst_subsys and resynchronise on
+    // the next first beat (the host filter drops orphan tails).
     pcileech_tlps128_src64 i_pcileech_tlps128_src64(
-        .rst                        ( rst_subsys                ),
+        .rst                        ( rst_req                   ),
         .clk_pcie                   ( clk_pcie                  ),
         .tlp_rx                     ( tlp_rx.sink               ),
-        .tlps_out                   ( tlps_rx.source_lite       )
+        .tlps_out                   ( tlps_rx_core.source_lite  )   // -> req_rx_cpl -> tlps_rx
     );
     
     pcileech_pcie_tlp_a7 i_pcileech_pcie_tlp_a7(
         .rst                        ( rst_subsys                ),
+        .rst_sys                    ( rst_subsys_sys            ),
+        .rst_fifo                   ( rst_subsys_fifo           ),
         .clk_pcie                   ( clk_pcie                  ),
         .clk_sys                    ( clk_sys                   ),
+        .cfgtlp_en                  ( pcie_cfgtlp_en            ),
+        .cfgtlp_zero                ( pcie_cfgtlp_zero          ),
+        .cfgtlp_filter              ( pcie_cfgtlp_filter        ),
+        .bar_en                     ( pcie_bar_en               ),
+        .cfgtlp_wren                ( pcie_cfgtlp_wren          ),
+        .alltlp_filter              ( pcie_alltlp_filter        ),
         .dfifo                      ( dfifo_tlp                 ),
-        .tlps_tx                    ( tlps_tx.source            ),       
-        .tlps_rx                    ( tlps_rx.sink_lite         ),
+        .tlps_tx                    ( tlps_tx.source            ),
+        .tlps_rx                    ( tlps_rx.sink_lite         ),   // tag-restored by req_rx_cpl
         .tlps_static                ( tlps_static.sink          ),
         .dshadow2fifo               ( dshadow2fifo              ),
         .pcie_id                    ( pcie_id                   ),   // <- [15:0]
         .pcie_ctx                   ( ctx                       ),
-        .rst_pcie_user              ( rst_pcie_user             )
+        .rst_pcie_user              ( rst_pcie_user             ),
+        .tx_stop                    ( tx_stop                   ),
+        .tx_idle                    ( tx_idle                   )
     );
     
+    // TX stream converter reset: global rst, and the core user reset (PERST#,
+    // link down, core reset). The core drops its transmit interface then, so a
+    // queued beat or the retained upper half of a beat must not reach the new
+    // link session. Both terms are clk_pcie registers (synchronous reset).
+    // The host subsystem reset (pcie_rst_subsys) on a live link does not flush
+    // it: pcileech_pcie_tx_drain applies that reset only once the upstream TX
+    // mux has stopped at a packet boundary, so every packet handed to the
+    // converter is complete and drains to the core on its own.
     pcileech_tlps128_dst64 i_pcileech_tlps128_dst64(
-        .rst                        ( rst                       ),
+        .rst                        ( rst_clkpcie || rst_pcie_user ),
         .clk_pcie                   ( clk_pcie                  ),
         .tlp_tx                     ( tlp_tx.source             ),
-        .tlps_in                    ( tlps_tx.sink              )
+        .tlps_in                    ( tlps_tx_gated.sink        )   // <- req_gate
     );
+
+    // ----------------------------------------------------------------------------
+    // R1 REQUESTER TRACKING (contract MSIX_REQUESTER_CONTRACT.md)
+    // ----------------------------------------------------------------------------
+    // TX: merged TX (tlps_tx) -> req_gate -> dst64 -> core; req_tx_obs marks the
+    // tags the core accepted. RX: src64 -> req_rx_cpl (tag restore, completion
+    // accounting) -> tlps_rx fan-out. Error events are queued and counted by
+    // req_err only: the core is built without error reporting/AER, so its
+    // cfg_err_* inputs stay tied off (decision 2026-11-11, count only).
+    // Tracker reset is the link session abort, shared with dst64: global rst
+    // and the core user reset. Never the host subsystem reset.
+    // The completion timer counts clk_pcie, so its frequency must come from
+    // the plan (exact core user-clock readback), never an assumed default.
+    assign rst_req = rst_clkpcie || rst_pcie_user;
+    if (REQ_CLK_PCIE_HZ != 64'd62_500_000 && REQ_CLK_PCIE_HZ != 64'd125_000_000 &&
+        REQ_CLK_PCIE_HZ != 64'd250_000_000) begin : g_req_clk_unbound
+        $fatal(1, "REQ_CLK_PCIE_HZ must be bound to the core user clock (62.5/125/250 MHz)");
+    end
+    wire [15:0] req_live_rid = { ctx.cfg_bus_number, ctx.cfg_device_number, ctx.cfg_function_number };
+
+    wire [255:0] req_free;
+    wire [8:0]   req_n_reserved, req_n_issued, req_n_quarantined;
+    wire         req_adm_valid, req_iss_valid, req_to_valid, req_trn_pending;
+    wire         req_err_bypass, req_err_release;
+    wire [7:0]   req_adm_tag, req_adm_host_tag, req_iss_tag;
+    wire [12:0]  req_adm_bc;
+    wire [6:0]   req_adm_la;
+    wire [2:0]   req_adm_tc;
+    wire [1:0]   req_adm_attr;
+    wire [15:0]  req_admitted_count, req_tx_drop_count;
+    wire [111:0] req_refuse_counts;
+    wire [7:0]   req_lk_tag, req_lk_host_tag, req_up_tag;
+    wire [1:0]   req_lk_state, req_lk_attr;
+    wire         req_lk_superseded, req_up_valid, req_up_retire;
+    wire [12:0]  req_lk_remaining, req_up_remaining;
+    wire [6:0]   req_lk_next_la, req_up_next_la;
+    wire [2:0]   req_lk_tc;
+    wire         req_unexpected_valid, req_malformed_valid;
+    wire [95:0]  req_unexpected_header;
+    wire [127:0] req_malformed_header;
+    wire [15:0]  req_completed_count, req_unexpected_count, req_mismatch_count, req_bcm_count;
+    wire [15:0]  req_crs_count, req_superseded_count, req_malformed_count;
+    wire [9:0]   req_err_level, req_err_high_water;
+    wire [15:0]  req_err_reported_count, req_err_suppressed_count, req_err_overflow_count;
+    wire         req_err_overflow;
+
+    // Requester Device Control inputs pass through one clk_pcie register.
+    // The PCIE_2_1 hard block drives these pins with about 1.3 ns clock-to-out
+    // and a fanout above 600, and the combinational allocator/gate/table cone
+    // failed routed setup at n_quarantined (-1.551 ns).
+    // The lag adds one cycle to the gate's existing pipeline latency. A request
+    // admitted in that cycle matches one admitted a cycle earlier and still
+    // queued. Device Control 2 changes may apply the old or new value to
+    // pending requests.
+    // bme stays live, so a cleared Bus Master Enable stops admission with no
+    // added delay. Reset, FLR and hot reset clear BME, which also covers the
+    // cycle where these registers catch up.
+    // No reset: each register follows its core output.
+    reg       req_ext_tag_en;
+    reg [2:0] req_mrrs_code;
+    reg [3:0] req_ctl_code;
+    reg       req_ctl_disable;
+    always @ ( posedge clk_pcie ) begin
+        req_ext_tag_en  <= ctx.cfg_dcommand[8];
+        req_mrrs_code   <= ctx.cfg_dcommand[14:12];
+        req_ctl_code    <= ctx.cfg_dcommand2[3:0];
+        req_ctl_disable <= ctx.cfg_dcommand2[4];
+    end
+
+    wire [7:0] req_fc_nph;
+    wire [8:0] req_np_cap;
+    pcileech_req_np_cap i_pcileech_req_np_cap (
+        .clk(clk_pcie), .rst(rst_req), .link_up(user_lnk_up),
+        .fc_nph(req_fc_nph), .np_cap(req_np_cap)
+    );
+    pcileech_req_gate_axis i_pcileech_req_gate_axis (
+        .np_cap                     ( req_np_cap                ),
+        .clk                        ( clk_pcie                  ),
+        .rst                        ( rst_req                   ),
+        .tlps_in                    ( tlps_tx.sink              ),
+        .tlps_out                   ( tlps_tx_gated.source      ),
+        .live_rid                   ( req_live_rid              ),
+        .bme                        ( ctx.cfg_command[2]        ),
+        .mrrs_code                  ( req_mrrs_code             ),
+        .ext_tag_en                 ( req_ext_tag_en            ),
+        .free                       ( req_free                  ),
+        .n_reserved                 ( req_n_reserved            ),
+        .n_issued                   ( req_n_issued              ),
+        .adm_valid                  ( req_adm_valid             ),
+        .adm_tag                    ( req_adm_tag               ),
+        .adm_host_tag               ( req_adm_host_tag          ),
+        .adm_bc                     ( req_adm_bc                ),
+        .adm_la                     ( req_adm_la                ),
+        .adm_tc                     ( req_adm_tc                ),
+        .adm_attr                   ( req_adm_attr              ),
+        .admitted_count             ( req_admitted_count        ),
+        .refuse_counts              ( req_refuse_counts         )
+    );
+
+    pcileech_req_tx_obs i_pcileech_req_tx_obs(
+        .clk                        ( clk_pcie                  ),
+        .rst                        ( rst_req                   ),
+        .tx_data                    ( tlp_tx.data               ),
+        .tx_valid                   ( tlp_tx.valid              ),
+        .tx_ready                   ( tlp_tx.ready              ),
+        .tx_last                    ( tlp_tx.last               ),
+        .tx_err_drop                ( ctx.tx_err_drop           ),
+        .iss_valid                  ( req_iss_valid             ),
+        .iss_tag                    ( req_iss_tag               ),
+        .tx_drop_count              ( req_tx_drop_count         )
+    );
+
+    // The gate has no pre-core release path: a RESERVED entry is issued by
+    // the observer or recovered by its timer, so rel_valid stays low.
+    pcileech_req_table #(
+        .CLK_PCIE_HZ                ( REQ_CLK_PCIE_HZ           )
+    ) i_pcileech_req_table(
+        .clk                        ( clk_pcie                  ),
+        .rst                        ( rst_req                   ),
+        .flr                        ( ctx.cfg_received_func_lvl_rst ),
+        .ctl_code                   ( req_ctl_code              ),
+        .ctl_disable                ( req_ctl_disable           ),
+        .adm_valid                  ( req_adm_valid             ),
+        .adm_tag                    ( req_adm_tag               ),
+        .adm_host_tag               ( req_adm_host_tag          ),
+        .adm_bc                     ( req_adm_bc                ),
+        .adm_la                     ( req_adm_la                ),
+        .adm_tc                     ( req_adm_tc                ),
+        .adm_attr                   ( req_adm_attr              ),
+        .iss_valid                  ( req_iss_valid             ),
+        .iss_tag                    ( req_iss_tag               ),
+        .rel_valid                  ( 1'b0                      ),
+        .rel_tag                    ( 8'd0                      ),
+        .lk_tag                     ( req_lk_tag                ),
+        .lk_state                   ( req_lk_state              ),
+        .lk_host_tag                ( req_lk_host_tag           ),
+        .lk_superseded              ( req_lk_superseded         ),
+        .lk_remaining               ( req_lk_remaining          ),
+        .lk_next_la                 ( req_lk_next_la            ),
+        .lk_tc                      ( req_lk_tc                 ),
+        .lk_attr                    ( req_lk_attr               ),
+        .up_valid                   ( req_up_valid              ),
+        .up_tag                     ( req_up_tag                ),
+        .up_retire                  ( req_up_retire             ),
+        .up_remaining               ( req_up_remaining          ),
+        .up_next_la                 ( req_up_next_la            ),
+        .free                       ( req_free                  ),
+        .to_valid                   ( req_to_valid              ),
+        .to_tag                     (                           ),
+        .n_reserved                 ( req_n_reserved            ),
+        .n_issued                   ( req_n_issued              ),
+        .n_quarantined              ( req_n_quarantined         ),
+        .trn_pending                ( req_trn_pending           ),
+        .err_bypass                 ( req_err_bypass            ),
+        .err_release                ( req_err_release           )
+    );
+
+    pcileech_req_rx_cpl i_pcileech_req_rx_cpl(
+        .clk                        ( clk_pcie                  ),
+        .rst                        ( rst_req                   ),
+        .flr                        ( ctx.cfg_received_func_lvl_rst ),
+        .in_data                    ( tlps_rx_core.tdata        ),
+        .in_keep                    ( tlps_rx_core.tkeepdw      ),
+        .in_user                    ( tlps_rx_core.tuser        ),
+        .in_last                    ( tlps_rx_core.tlast        ),
+        .in_valid                   ( tlps_rx_core.tvalid       ),
+        .out_data                   ( tlps_rx.tdata             ),
+        .out_keep                   ( tlps_rx.tkeepdw           ),
+        .out_user                   ( tlps_rx.tuser             ),
+        .out_last                   ( tlps_rx.tlast             ),
+        .out_valid                  ( tlps_rx.tvalid            ),
+        .lk_tag                     ( req_lk_tag                ),
+        .lk_state                   ( req_lk_state              ),
+        .lk_host_tag                ( req_lk_host_tag           ),
+        .lk_superseded              ( req_lk_superseded         ),
+        .lk_remaining               ( req_lk_remaining          ),
+        .lk_next_la                 ( req_lk_next_la            ),
+        .lk_tc                      ( req_lk_tc                 ),
+        .lk_attr                    ( req_lk_attr               ),
+        .up_valid                   ( req_up_valid              ),
+        .up_tag                     ( req_up_tag                ),
+        .up_retire                  ( req_up_retire             ),
+        .up_remaining               ( req_up_remaining          ),
+        .up_next_la                 ( req_up_next_la            ),
+        .unexpected_valid           ( req_unexpected_valid      ),
+        .unexpected_header          ( req_unexpected_header     ),
+        .malformed_valid            ( req_malformed_valid       ),
+        .malformed_header           ( req_malformed_header      ),
+        .completed_count            ( req_completed_count       ),
+        .unexpected_count           ( req_unexpected_count      ),
+        .mismatch_count             ( req_mismatch_count        ),
+        .bcm_count                  ( req_bcm_count             ),
+        .crs_count                  ( req_crs_count             ),
+        .superseded_count           ( req_superseded_count      ),
+        .malformed_count            ( req_malformed_count       )
+    );
+
+    // Count only: aer_enabled=0 keeps every event out of the AER logging path
+    // and the cfg_err_* outputs are left unconnected (core reporting is off).
+    pcileech_req_err i_pcileech_req_err(
+        .clk                        ( clk_pcie                  ),
+        .rst                        ( rst_req                   ),
+        .power_state                ( ctx.cfg_pmcsr_powerstate  ),
+        .aer_enabled                ( 1'b0                      ),
+        .aer_uncor_mask             ( 32'd0                     ),
+        .headerlog_set              ( 1'b0                      ),
+        .timeout_valid              ( req_to_valid              ),
+        .unexpected_valid           ( req_unexpected_valid      ),
+        .unexpected_header          ( req_unexpected_header     ),
+        .malformed_valid            ( req_malformed_valid       ),
+        .malformed_header           ( req_malformed_header      ),
+        .cfg_err_cpl_timeout        (                           ),
+        .cfg_err_cpl_unexpect       (                           ),
+        .cfg_err_malformed          (                           ),
+        .cfg_err_posted             (                           ),
+        .cfg_err_no_recovery        (                           ),
+        .cfg_err_locked             (                           ),
+        .cfg_err_tlp_cpl_header     (                           ),
+        .cfg_err_aer_headerlog      (                           ),
+        .level                      ( req_err_level             ),
+        .high_water                 ( req_err_high_water        ),
+        .reported_count             ( req_err_reported_count    ),
+        .suppressed_count           ( req_err_suppressed_count  ),
+        .overflow_count             ( req_err_overflow_count    ),
+        .err_overflow               ( req_err_overflow          )
+    );
+
+    pcileech_req_status i_pcileech_req_status(
+        .clk_pcie                   ( clk_pcie                  ),
+        .rst_pcie                   ( rst_req                   ),
+        .admitted_count             ( req_admitted_count        ),
+        .refuse_counts              ( req_refuse_counts         ),
+        .n_reserved                 ( req_n_reserved            ),
+        .n_issued                   ( req_n_issued              ),
+        .n_quarantined              ( req_n_quarantined         ),
+        .timeout_valid              ( req_to_valid              ),
+        .err_bypass                 ( req_err_bypass            ),
+        .err_release                ( req_err_release           ),
+        .completed_count            ( req_completed_count       ),
+        .unexpected_count           ( req_unexpected_count      ),
+        .malformed_count            ( req_malformed_count       ),
+        .superseded_count           ( req_superseded_count      ),
+        .mismatch_count             ( req_mismatch_count        ),
+        .bcm_count                  ( req_bcm_count             ),
+        .crs_count                  ( req_crs_count             ),
+        .tx_drop_count              ( req_tx_drop_count         ),
+        .err_reported_count         ( req_err_reported_count    ),
+        .err_suppressed_count       ( req_err_suppressed_count  ),
+        .err_overflow_count         ( req_err_overflow_count    ),
+        .err_level                  ( req_err_level             ),
+        .err_high_water             ( req_err_high_water        ),
+        .err_overflow               ( req_err_overflow          ),
+        .clk_sys                    ( clk_sys                   ),
+        .ro_status                  ( dfifo_pcie.req_status     )
+    );
+
+    // ----------------------------------------------------------------------------
+    // RESET-HELD DRP STARTUP (contract section 11), clk_sys = DRP clock.
+    // Owns the core DRP port while it applies the plan; host bridge requests
+    // are deferred until it is idle, and host writes to the plan address are
+    // refused.
+    // ----------------------------------------------------------------------------
+    wire        drp_en, drp_we, drp_rdy;
+    wire [8:0]  drp_addr;
+    wire [15:0] drp_di, drp_do;
+    wire        drp_failed;
+    wire [1:0]  drp_fail_reason;
+    wire [7:0]  drp_fail_count, drp_host_refused_count, drp_host_timeout_count;
+    wire        drp_fail_sticky;
+    wire [15:0] drp_read_word, drp_verify_word;
+
+    pcileech_pcie_drp_startup #(
+        .PLAN_BOUND                 ( DRP_PLAN_BOUND            ),
+        .PLAN_ADDR                  ( DRP_PLAN_ADDR             ),
+        .PLAN_MASK                  ( DRP_PLAN_MASK             ),
+        .PLAN_VALUE                 ( DRP_PLAN_VALUE            ),
+        .PLAN_CHECK_MASK            ( DRP_PLAN_CHECK_MASK       ),
+        .PLAN_BASE_EXPECT           ( DRP_PLAN_BASE_EXPECT      ),
+        .RDY_TIMEOUT_CYCLES         ( DRP_RDY_TIMEOUT_CYCLES    )
+    ) i_pcileech_pcie_drp_startup (
+        .clk                        ( clk_sys                   ),
+        .rst_src                    ( rst_pcie_src              ),
+        .drp_ok                     ( drp_ok                    ),
+        .host_en                    ( dfifo_pcie.drp_en         ),
+        .host_we                    ( dfifo_pcie.drp_we         ),
+        .host_addr                  ( dfifo_pcie.drp_addr       ),
+        .host_di                    ( dfifo_pcie.drp_di         ),
+        .host_rdy                   ( dfifo_pcie.drp_rdy        ),
+        .host_do                    ( dfifo_pcie.drp_do         ),
+        .drp_en                     ( drp_en                    ),
+        .drp_we                     ( drp_we                    ),
+        .drp_addr                   ( drp_addr                  ),
+        .drp_di                     ( drp_di                    ),
+        .drp_rdy                    ( drp_rdy                   ),
+        .drp_do                     ( drp_do                    ),
+        .failed                     ( drp_failed                ),
+        .fail_reason                ( drp_fail_reason           ),
+        .fail_count                 ( drp_fail_count            ),
+        .read_word                  ( drp_read_word             ),
+        .verify_word                ( drp_verify_word           ),
+        .host_refused_count         ( drp_host_refused_count    ),
+        .host_timeout_count         ( drp_host_timeout_count    ),
+        .fail_sticky                ( drp_fail_sticky           )
+    );
+    // clk_sys status words for pcileech_fifo ro +0x068 (see pcileech_fifo.sv)
+    assign dfifo_pcie.drp_status = { drp_verify_word, drp_read_word,
+                                     drp_host_refused_count, drp_fail_count,
+                                     drp_host_timeout_count, 3'd0, drp_fail_sticky,
+                                     drp_fail_reason, drp_failed, drp_ok };
     
     // ----------------------------------------------------------------------------
     // PCIe CORE BELOW
@@ -123,7 +539,7 @@ module pcileech_pcie_a7(
         .pci_exp_rxp                ( pcie_rx_p                 ),  // <-
         .pci_exp_rxn                ( pcie_rx_n                 ),  // <-
         .sys_clk                    ( pcie_clk_c                ),  // <-
-        .sys_rst_n                  ( ~rst_pcie                 ),  // <-
+        .sys_rst_n                  ( rst_pcie_n                ),  // <-
     
         // s_axis_tx (transmit data)
         .s_axis_tx_tdata            ( tlp_tx.data               ),  // <- [63:0]
@@ -154,8 +570,9 @@ module pcileech_pcie_a7(
 
         // Unused inputs tied inactive. Left unconnected, the IP's driverless
         // nets fail opt_design (Opt31-67) under Vivado 2026.1.
-        // flow control: select 3'b000; fc_* outputs are unused.
-        .fc_sel                     ( 3'b000                    ),  // <- [2:0]
+        // Transmit NP credit limit: sampled once before NP admission.
+        .fc_nph                     ( req_fc_nph                ),  // -> [7:0]
+        .fc_sel                     ( 3'b101                    ),  // <- [2:0]
         // error reporting: no user-reported errors. These are active-high
         // requests; header/log values are sampled only with a request.
         .cfg_err_ecrc               ( 1'b0                      ),  // <-
@@ -211,7 +628,7 @@ module pcileech_pcie_a7(
         .cfg_pm_wake                ( ctx.cfg_pm_wake                   ),  // <-
         .rx_np_ok                   ( ctx.rx_np_ok                      ),  // <-
         .rx_np_req                  ( ctx.rx_np_req                     ),  // <-
-        .cfg_trn_pending            ( ctx.cfg_trn_pending               ),  // <-
+        .cfg_trn_pending            ( req_trn_pending                   ),  // <- R1 tracker, contract O12 (cfg_a7 rw[215] is no longer used)
         .cfg_turnoff_ok             ( ctx.cfg_turnoff_ok                ),  // <-
         .tx_cfg_gnt                 ( ctx.tx_cfg_gnt                    ),  // <-
         
@@ -273,12 +690,12 @@ module pcileech_pcie_a7(
         
         // DRP - clock domain clk_100 - write should only happen when core is in reset state ...
         .pcie_drp_clk               ( clk_sys                           ),  // <-
-        .pcie_drp_en                ( dfifo_pcie.drp_en                 ),  // <-
-        .pcie_drp_we                ( dfifo_pcie.drp_we                 ),  // <-
-        .pcie_drp_addr              ( dfifo_pcie.drp_addr               ),  // <- [8:0]
-        .pcie_drp_di                ( dfifo_pcie.drp_di                 ),  // <- [15:0]
-        .pcie_drp_rdy               ( dfifo_pcie.drp_rdy                ),  // ->
-        .pcie_drp_do                ( dfifo_pcie.drp_do                 ),  // -> [15:0]
+        .pcie_drp_en                ( drp_en                            ),  // <- drp_startup (host bridge muxed in)
+        .pcie_drp_we                ( drp_we                            ),  // <-
+        .pcie_drp_addr              ( drp_addr                          ),  // <- [8:0]
+        .pcie_drp_di                ( drp_di                            ),  // <- [15:0]
+        .pcie_drp_rdy               ( drp_rdy                           ),  // ->
+        .pcie_drp_do                ( drp_do                            ),  // -> [15:0]
     
         // user interface
         .user_clk_out               ( clk_pcie                          ),  // ->
@@ -293,6 +710,12 @@ endmodule
 // ------------------------------------------------------------------------
 // TLP STREAM SINK:
 // Convert a 128-bit TLP-AXI-STREAM to a 64-bit PCIe core AXI-STREAM.
+//
+// rst (in pcileech_pcie_a7: rst or the core user reset) flushes the queue.
+// The host subsystem reset (pcie_rst_subsys) on a live link does not reset
+// this converter. It resets the upstream TX mux and sources only after
+// pcileech_pcie_tx_drain has stopped the mux at a packet boundary, so queued
+// beats always end with a last beat and keep draining to the core.
 // ------------------------------------------------------------------------
 module pcileech_tlps128_dst64(
     input                   rst,
@@ -382,7 +805,7 @@ module pcileech_tlps128_src64(
     assign tlps_out.tuser[8:2]  = bar_hit;
     
     wire [3:0]  next_base   = (tlast || tvalid) ? 0 : len;
-    wire [3:0]  next_len    = next_base + 1 + tlp_rx.keep[4];
+    wire [3:0]  next_len    = next_base + 4'd1 + {3'd0, tlp_rx.keep[4]};
 
     always @ ( posedge clk_pcie )
         if ( rst ) begin
@@ -405,4 +828,493 @@ module pcileech_tlps128_src64(
             bar_hit <= 0;
         end
     
+endmodule
+
+
+
+// ------------------------------------------------------------------------
+// CONTROL WORD CLOCK DOMAIN CROSSING:
+// Carry a multi-bit control word from clk_src to clk_dst as one coherent
+// value through xpm_cdc_handshake. The destination only ever holds a word that
+// existed in clk_src, so related bits never appear mixed. When the source
+// changes while a transfer is in flight, the transfer completes and the
+// newest value is sent next, so the destination converges on the latest word.
+//
+// The handshake is never aborted (xpm_cdc_handshake has no reset and requires
+// src_send to stay high until src_rcv). rst_src only clears src_synced, which
+// rises again once the word current after reset has been delivered and is
+// meant to hold the clk_dst consumers in reset until then. rst_src must
+// include every reset that releases those consumers (in pcileech_pcie_a7:
+// rst_cfgword of pcileech_pcie_a7_rst). dst_word has no
+// reset: it always holds the last delivered word. Its power-up value matches
+// the FIFO's RW reset defaults but is never relied on, because src_synced
+// starts low.
+// ------------------------------------------------------------------------
+module pcileech_pcie_cfgword_cdc #(
+    parameter               WIDTH       = 6,
+    parameter [WIDTH-1:0]   INIT_WORD   = 6'b001111     // {alltlp_filter, cfgtlp_wren, bar_en, cfgtlp_filter, cfgtlp_zero, cfgtlp_en}
+) (
+    input                   clk_src,
+    input                   rst_src,        // clk_src synchronous
+    input   [WIDTH-1:0]     src_word,
+    output reg              src_synced = 1'b0,
+    input                   clk_dst,
+    output reg [WIDTH-1:0]  dst_word = INIT_WORD
+);
+    localparam [1:0] S_IDLE = 2'd0, S_LOAD = 2'd1, S_SEND = 2'd2, S_DRAIN = 2'd3;
+
+    reg [1:0]       state       = S_IDLE;
+    reg             src_send    = 1'b0;
+    reg [WIDTH-1:0] tx_word     = INIT_WORD;    // held from S_LOAD until back in S_IDLE
+    reg [WIDTH-1:0] acked_word  = INIT_WORD;    // last word the destination received
+    reg             acked_valid = 1'b0;
+    wire            src_rcv;
+    wire            dest_req;
+    wire [WIDTH-1:0] dest_out;
+
+    wire            delivered   = (state == S_IDLE) && acked_valid && (acked_word == src_word);
+
+    always @ ( posedge clk_src ) begin
+        case ( state )
+            S_IDLE:
+                if ( !src_rcv && !delivered ) begin
+                    tx_word     <= src_word;
+                    state       <= S_LOAD;
+                end
+            S_LOAD: begin                       // tx_word stable for a clock before src_send
+                src_send    <= 1'b1;
+                state       <= S_SEND;
+            end
+            S_SEND:
+                if ( src_rcv ) begin
+                    src_send    <= 1'b0;
+                    acked_word  <= tx_word;
+                    acked_valid <= 1'b1;
+                    state       <= S_DRAIN;
+                end
+            S_DRAIN:                            // src_rcv must fall before the next src_send
+                if ( !src_rcv )
+                    state       <= S_IDLE;
+            default:                            // unreachable: all four encodings are states
+                state       <= S_IDLE;
+        endcase
+        if ( rst_src )
+            src_synced <= 1'b0;
+        else if ( delivered )
+            src_synced <= 1'b1;
+    end
+
+    xpm_cdc_handshake #(
+        .DEST_EXT_HSK       ( 0                     ),
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_SYNC_FF        ( 4                     ),
+        .WIDTH              ( WIDTH                 )
+    ) i_xpm_cdc_handshake (
+        .src_clk            ( clk_src               ),
+        .src_in             ( tx_word               ),
+        .src_send           ( src_send              ),
+        .src_rcv            ( src_rcv               ),
+        .dest_clk           ( clk_dst               ),
+        .dest_out           ( dest_out              ),
+        .dest_req           ( dest_req              ),
+        .dest_ack           ( 1'b0                  )
+    );
+
+    always @ ( posedge clk_dst )
+        if ( dest_req )
+            dst_word <= dest_out;
+
+endmodule
+
+
+
+// ------------------------------------------------------------------------
+// PCIe RESETS:
+// One reset per clock domain, created at the domain boundary. rst,
+// pcie_perst_n, pcie_rst_core and pcie_rst_subsys are clk_sys registers or
+// synchronizer outputs. A reset entering clk_pcie is asserted asynchronously
+// (it holds while clk_pcie is stopped) and released synchronously to
+// clk_pcie. No reset is a combinational mix of clock domains, and no LUT
+// drives an asynchronous reset pin.
+// ------------------------------------------------------------------------
+module pcileech_pcie_a7_rst(
+    input                   clk_sys,
+    input                   clk_pcie,
+    input                   rst,                // clk_sys
+    input                   pcie_perst_n,       // clk_sys (synchronized PERST#)
+    input                   pcie_rst_core,      // clk_sys
+    input                   pcie_rst_subsys,    // clk_sys
+    input                   cfgword_synced,     // clk_sys: post-reset control word delivered to clk_pcie
+    input                   rst_pcie_user,      // clk_pcie: core user reset (registered in the IP)
+    input                   drp_ok,             // clk_sys: reset-held DRP plan applied and verified
+    output                  rst_pcie_src,       // clk_sys: rst || ~perst_n || pcie_rst_core (DRP startup trigger)
+    output reg              rst_pcie_n = 1'b0,  // core sys_rst_n
+    output reg              rst_subsys_sys = 1'b1,  // clk_sys: subsystem reset and FIFO quarantine
+    output                  rst_subsys_fifo,    // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
+    output                  rst_subsys,
+    output                  rst_clkpcie,
+    output                  rst_cfgword         // clk_sys: rst_src of pcileech_pcie_cfgword_cdc
+);
+    // PCIe core sys_rst_n: one active-low clk_sys register, so the core's own
+    // reset synchronizer never sees a decode glitch or a LUT.
+    // PG054 (System Interface): sys_rst_n must be asserted for at least
+    // 1500 ns on power-on and warm reset. A reset source may be a single
+    // clk_sys cycle (pcie_rst_core is a host-written register bit), so the
+    // assertion is stretched: rst_pcie_n is released only after
+    // RST_PCIE_N_CYCLES consecutive clk_sys cycles with no reset source.
+    // clk_sys is the 100 MHz board clock (XDC net_clk, 10.000 ns, used without
+    // an MMCM), so the 256 cycles give at least 2560 ns. That still meets
+    // 1500 ns if clk_sys were up to 170 MHz. Every new source assertion
+    // restarts the full stretch. At power-up the counter starts at 0, so
+    // the stretch applies then too. A source held low (for example PERST#)
+    // keeps sys_rst_n low indefinitely. The counter runs on clk_sys only; it
+    // never waits for a PCIe-core-generated clock.
+    // Assertion still takes effect one clk_sys edge after a source asserts,
+    // as before.
+    localparam integer RST_PCIE_N_LOG2 = 8;         // RST_PCIE_N_CYCLES = 2**8 = 256
+    reg  [RST_PCIE_N_LOG2:0] rst_pcie_n_cnt = '0;   // clk_sys cycles since the last reset source; MSB = done
+    assign rst_pcie_src = rst || ~pcie_perst_n || pcie_rst_core;
+    always @ ( posedge clk_sys ) begin
+        if ( rst_pcie_src )
+            rst_pcie_n_cnt <= '0;
+        else if ( !rst_pcie_n_cnt[RST_PCIE_N_LOG2] )
+            rst_pcie_n_cnt <= rst_pcie_n_cnt + 1'b1;
+        // R1 contract section 11: the core also stays in reset until the
+        // reset-held DRP plan has been applied and verified (drp_ok clears on
+        // every reset-source assertion and the sequence re-runs).
+        rst_pcie_n <= rst_pcie_n_cnt[RST_PCIE_N_LOG2] && !rst_pcie_src && drp_ok;
+    end
+
+    // ------------------------------------------------------------------------
+    // Core user reset -> control-word gate re-arm (request/ack handshake).
+    // The core user reset may be a single clk_pcie pulse, may happen while
+    // clk_sys is slower, and is released in clk_pcie. After it, the clk_pcie
+    // consumers must again wait for the control word current at (or after)
+    // its release. clk_pcie latches the event in ua_busy and keeps rst_subsys
+    // asserted itself until clk_sys has acknowledged that the gate is re-armed
+    // (cfgword_synced cleared and rst_subsys_req set), so there is no clock
+    // edge on which rst_subsys is released in between.
+    //   clk_pcie: IDLE (ua_busy=0) -user reset-> REQ (ua_req=1)
+    //             REQ  -ack seen, user reset released, rst_subsys_req_pcie
+    //                   seen asserted-> DROP (ua_req=0)
+    //             DROP -ack gone-> IDLE, or REQ if a user reset came meanwhile.
+    //   clk_sys:  ua_req_sys clears the gate (rst_cfgword) and sets
+    //             rst_subsys_req; ua_ack follows one clock later, once both
+    //             have taken effect. While ua_req_sys stays high the gate stays
+    //             cleared, so it is re-armed after the user reset was released
+    //             (REQ->DROP needs the user reset low).
+    // Four-phase: a new request is raised only after the previous ack has
+    // fallen, so a stale ack is never taken for a new one. ua_* are not reset:
+    // like the control-word handshake, this one is never aborted.
+    // The request is dropped only once rst_subsys_req_pcie has been seen
+    // asserted in clk_pcie. Otherwise the drop would rely on the asynchronous
+    // assertion of rst_subsys_req_pcie (an untimed preset path) arriving before
+    // the ack round trip completes. With the guard, ua_busy never falls while
+    // the gate's reset has not yet reached clk_pcie. No deadlock: while ua_req
+    // is high, ua_req_sys pins rst_subsys_req high (rst_cfgword), and its
+    // asynchronous preset holds rst_subsys_req_pcie high regardless of clocks,
+    // so the guard is true whenever the ack is. A late or metastable sample of
+    // a 0->1 edge only delays the drop by a clk_pcie cycle.
+    // ------------------------------------------------------------------------
+    reg  ua_req  = 1'b0;                // clk_pcie: re-arm request
+    reg  ua_busy = 1'b0;                // clk_pcie: REQ or DROP
+    reg  ua_pend = 1'b0;                // clk_pcie: user reset seen during DROP
+    wire ua_req_sys;                    // clk_sys
+    reg  ua_ack  = 1'b0;                // clk_sys
+    wire ua_ack_pcie;                   // clk_pcie
+    wire rst_subsys_req_pcie;           // clk_pcie (async assert, sync release)
+
+    always @ ( posedge clk_pcie )
+        if ( !ua_busy ) begin                               // IDLE
+            ua_req  <= rst_pcie_user;
+            ua_busy <= rst_pcie_user;
+            ua_pend <= 1'b0;
+        end
+        else if ( ua_req ) begin                            // REQ
+            if ( ua_ack_pcie && !rst_pcie_user && rst_subsys_req_pcie )
+                ua_req  <= 1'b0;
+        end
+        else if ( !ua_ack_pcie ) begin                      // DROP, ack gone
+            ua_req  <= ua_pend || rst_pcie_user;
+            ua_busy <= ua_pend || rst_pcie_user;
+            ua_pend <= 1'b0;
+        end
+        else                                                // DROP
+            ua_pend <= ua_pend || rst_pcie_user;
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // ua_req is a register
+    ) i_cdc_ua_req (
+        .src_clk            ( clk_pcie              ),
+        .src_in             ( ua_req                ),
+        .dest_clk           ( clk_sys               ),
+        .dest_out           ( ua_req_sys            )
+    );
+
+    // Control-word gate clear: every reset that releases the clk_pcie
+    // consumers. PERST# and the core reset are also taken directly here, not
+    // only through the core user reset they cause. All terms are clk_sys
+    // registers or synchronizer outputs; synchronous clear only.
+    assign rst_cfgword = rst || ~pcie_perst_n || pcie_rst_core || pcie_rst_subsys || ua_req_sys;
+
+    // Subsystem reset, clk_pcie side. The clk_sys request also stays asserted
+    // until the control word has delivered its post-reset value, so clk_pcie
+    // logic never leaves reset on a stale shadow/BAR/filter setting.
+    reg  rst_subsys_req = 1'b1;
+    always @ ( posedge clk_sys )
+        rst_subsys_req <= rst_cfgword || ~cfgword_synced;
+
+    // Ack only after the request has registered rst_subsys_req (and, at the
+    // same edge, cleared cfgword_synced through rst_cfgword).
+    always @ ( posedge clk_sys )
+        ua_ack <= ua_req_sys && rst_subsys_req;
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // ua_ack is a register
+    ) i_cdc_ua_ack (
+        .src_clk            ( clk_sys               ),
+        .src_in             ( ua_ack                ),
+        .dest_clk           ( clk_pcie              ),
+        .dest_out           ( ua_ack_pcie           )
+    );
+
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .RST_ACTIVE_HIGH    ( 1                     )
+    ) i_cdc_rst_subsys_pcie (
+        .src_arst           ( rst_subsys_req        ),
+        .dest_clk           ( clk_pcie              ),
+        .dest_arst          ( rst_subsys_req_pcie   )
+    );
+    // All terms are clk_pcie registers; used only as a synchronous reset.
+    // ua_busy covers the core user reset from its release until clk_sys has
+    // re-armed the control-word gate (rst_subsys_req_pcie is asserted by then).
+    assign rst_subsys = rst_subsys_req_pcie || rst_pcie_user || ua_busy;
+
+    // Registered copy of rst_subsys: asserted asynchronously with the request,
+    // follows the core user reset synchronously. Glitch-free source for the
+    // crossing back into clk_sys.
+    reg  rst_subsys_pcie_q = 1'b1;
+    always @ ( posedge clk_pcie or posedge rst_subsys_req_pcie )
+        if ( rst_subsys_req_pcie )
+            rst_subsys_pcie_q <= 1'b1;
+        else
+            rst_subsys_pcie_q <= rst_pcie_user || ua_busy;
+
+    wire rst_subsys_pcie_sys;
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .RST_ACTIVE_HIGH    ( 1                     )
+    ) i_cdc_rst_subsys_sys (
+        .src_arst           ( rst_subsys_pcie_q     ),
+        .dest_clk           ( clk_sys               ),
+        .dest_arst          ( rst_subsys_pcie_sys   )
+    );
+
+    // Subsystem reset request, clk_sys side. It asserts with any reset source
+    // and is released only after the clk_pcie side has left reset (core user
+    // reset included), so clk_pcie state such as the TX packet count is never
+    // released after the FIFOs.
+    wire subsys_req_d = rst || pcie_rst_subsys || rst_subsys_pcie_sys;
+    reg  subsys_req = 1'b1;
+    always @ ( posedge clk_sys )
+        subsys_req <= subsys_req_d;
+
+    // Asynchronous rst pins of the seven clk_sys<->clk_pcie FIFOs (cfg TX/RX,
+    // shadow request/reply, TLP RX, TLP TX data/token): one clk_sys register,
+    // no LUT on the pin. A subsystem reset may be one clk_sys cycle, may come
+    // a cycle after the previous one, and may happen while clk_pcie is
+    // stopped, so the FIFO reset does not follow subsys_req directly. The COM
+    // FIFO sequencer (pcileech_com.sv) holds the pin during the request and,
+    // once it is released, applies a fresh reset with at least six full
+    // periods low before, high, and low after it in BOTH clocks (PG057
+    // pp. 127-130; six low periods is local policy, as for the COM FIFOs).
+    // rst_com clears its clk_pcie half: rst_subsys_pcie_q is a register,
+    // asserted asynchronously with the request (also with clk_pcie stopped)
+    // and following the core user reset synchronously, so no LUT drives that
+    // asynchronous reset.
+    wire fifo_done;
+    pcileech_com_fifo_reset #(.COUNT_CYCLES(6)) i_fifo_reset (
+        .clk                ( clk_sys               ),
+        .clk_com            ( clk_pcie              ),
+        .unavailable        ( subsys_req            ),
+        .rst_com            ( rst_subsys_pcie_q     ),
+        .fifo_rst           ( rst_subsys_fifo       ),
+        .done               ( fifo_done             )
+    );
+
+    // Subsystem reset, clk_sys side: clk_sys logic and the FIFO quarantine
+    // (the rst of each pcileech_tlps128_fifo_rst_window). It rises at the same
+    // edge as subsys_req and falls one cycle after the FIFO sequence is done,
+    // so it is high whenever rst_subsys_fifo is high and the windows count
+    // their no-access cycles after the FIFO reset has been released. The
+    // subsys_req term bridges the cycle before the sequencer clears done, so
+    // a one-cycle request gives one continuous high level.
+    always @ ( posedge clk_sys )
+        rst_subsys_sys <= subsys_req_d || subsys_req || !fifo_done;
+
+    // rst alone in clk_pcie (with the core user reset: the TX stream converter).
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .RST_ACTIVE_HIGH    ( 1                     )
+    ) i_cdc_rst_clkpcie (
+        .src_arst           ( rst                   ),
+        .dest_clk           ( clk_pcie              ),
+        .dest_arst          ( rst_clkpcie           )
+    );
+
+endmodule
+
+
+
+// ------------------------------------------------------------------------
+// Host subsystem reset on a live link: stop TX at a packet boundary first.
+//
+// soft_req is the host's pcie_rst_subsys bit (clk_sys register, a level the
+// host sets and clears). The subsystem reset resets the TX mux and its
+// sources, but not req_gate, dst64 or the core, which may hold part of the
+// selected packet. Applied directly, it could cut that packet: the converter
+// would never see its last beat and the next packet would follow the
+// unterminated one.
+//
+// So a request first raises tx_stop: the mux (pcileech_tlps128_sink_mux1)
+// selects no new packet and lets the selected one run to its last beat; then
+// tx_idle rises, with no pull outstanding. Only then is soft_rst raised
+// toward pcileech_pcie_a7_rst. tx_stop stays high until soft_rst is applied
+// and the host has released the bit, so no packet starts between the idle
+// report and the reset. soft_rst is high for at least one cycle per request,
+// even if the host bit was a single cycle.
+//
+// No timeout on a live link: the selected packet is complete in its source
+// (the host TX FIFO releases a packet only once its last word is in) and only
+// waits for the core to accept it. Cutting it on a timeout is exactly the
+// failure this avoids. If the link goes down instead, the core user reset (an
+// immediate link-session abort that also flushes dst64 and the gate) resets
+// the mux, which then reports idle. Global rst, PERST# and the core reset are
+// not drained: they abort the link session.
+//
+// Dead core clock: with clk_pcie stopped (refclk loss, slot powered down)
+// nothing can be transmitted and idle cannot be reported, so the reset is
+// applied without waiting once no clk_pcie edge has been seen for
+// DEAD_CYCLES clk_sys cycles. That case is a link-session abort, as for the
+// core user reset that accompanies it.
+//
+// tx_stop drops only once the reset is in effect (subsys_rst, the clk_sys
+// subsystem reset, high), so it reaches clk_pcie after the mux reset.
+//
+// Four-phase: a new request starts only after the previous idle report has
+// fallen, so a stale idle is never taken for the new stop.
+// ------------------------------------------------------------------------
+module pcileech_pcie_tx_drain #(
+    parameter integer       DEAD_CYCLES = 64    // clk_sys cycles without a clk_pcie edge
+) (
+    input                   clk_sys,
+    input                   clk_pcie,
+    input                   soft_req,       // clk_sys register: host subsystem reset bit
+    output reg              soft_rst = 1'b0,// clk_sys register: -> pcileech_pcie_a7_rst.pcie_rst_subsys
+    input                   subsys_rst,     // clk_sys register: subsystem reset in effect
+    output                  tx_stop,        // clk_pcie: -> TX mux
+    input                   tx_idle         // clk_pcie register: TX mux stopped
+    );
+    // clk_pcie liveness: a toggle crossed into clk_sys.
+    reg         pcie_tog = 1'b0;
+    always @ ( posedge clk_pcie )
+        pcie_tog <= ~pcie_tog;
+    wire        pcie_tog_sys;
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // pcie_tog is a register
+    ) i_cdc_tog (
+        .src_clk            ( clk_pcie              ),
+        .src_in             ( pcie_tog              ),
+        .dest_clk           ( clk_sys               ),
+        .dest_out           ( pcie_tog_sys          )
+    );
+    reg         pcie_tog_q = 1'b0;
+    reg  [6:0]  quiet = 7'd0;
+    reg         pcie_dead = 1'b0;
+    reg         applied_dead = 1'b0;    // diagnostic: applied without draining
+    always @ ( posedge clk_sys ) begin
+        pcie_tog_q <= pcie_tog_sys;
+        if ( pcie_tog_sys != pcie_tog_q )
+            quiet <= 7'd0;
+        else if ( !pcie_dead )
+            quiet <= quiet + 7'd1;
+        pcie_dead <= (pcie_tog_sys == pcie_tog_q) && (quiet >= 7'(DEAD_CYCLES - 1));
+    end
+`ifndef SYNTHESIS
+    initial if ( DEAD_CYCLES < 8 || DEAD_CYCLES > 120 ) $fatal(1, "pcileech_pcie_tx_drain: DEAD_CYCLES out of range");
+`endif
+    localparam [1:0] S_IDLE  = 2'd0;        // no request
+    localparam [1:0] S_STOP  = 2'd1;        // tx_stop raised, waiting for idle
+    localparam [1:0] S_APPLY = 2'd2;        // soft_rst applied
+    reg  [1:0]  state    = S_IDLE;
+    reg         stop_sys = 1'b0;
+    wire        idle_sys;
+
+    always @ ( posedge clk_sys )
+        case ( state )
+            S_IDLE:
+                if ( soft_req && (!idle_sys || pcie_dead) ) begin
+                    state    <= pcie_dead ? S_APPLY : S_STOP;
+                    stop_sys <= 1'b1;
+                    soft_rst <= pcie_dead;
+                    applied_dead <= pcie_dead;
+                end
+            S_STOP:
+                if ( idle_sys || pcie_dead ) begin
+                    state    <= S_APPLY;
+                    soft_rst <= 1'b1;
+                    applied_dead <= !idle_sys;
+                end
+            S_APPLY:
+                if ( !soft_req && subsys_rst ) begin
+                    state    <= S_IDLE;
+                    soft_rst <= 1'b0;
+                    stop_sys <= 1'b0;
+                    applied_dead <= 1'b0;
+                end
+            default: begin
+                state    <= S_IDLE;
+                soft_rst <= 1'b0;
+                stop_sys <= 1'b0;
+            end
+        endcase
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // stop_sys is a register
+    ) i_cdc_stop (
+        .src_clk            ( clk_sys               ),
+        .src_in             ( stop_sys              ),
+        .dest_clk           ( clk_pcie              ),
+        .dest_out           ( tx_stop               )
+    );
+
+    xpm_cdc_single #(
+        .DEST_SYNC_FF       ( 4                     ),
+        .INIT_SYNC_FF       ( 0                     ),
+        .SIM_ASSERT_CHK     ( 0                     ),
+        .SRC_INPUT_REG      ( 0                     )   // tx_idle is a register
+    ) i_cdc_idle (
+        .src_clk            ( clk_pcie              ),
+        .src_in             ( tx_idle               ),
+        .dest_clk           ( clk_sys               ),
+        .dest_out           ( idle_sys              )
+    );
 endmodule

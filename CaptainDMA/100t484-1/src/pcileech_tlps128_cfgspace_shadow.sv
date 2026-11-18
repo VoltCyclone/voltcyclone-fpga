@@ -13,9 +13,15 @@
 `timescale 1ns / 1ps
 
 module pcileech_tlps128_cfgspace_shadow(
-    input                   rst,
+    input                   rst,            // clk_pcie synchronous reset
+    input                   rst_sys,        // clk_sys register: quarantine of the clk_sys<->clk_pcie FIFOs
+    input                   rst_fifo,       // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
     input                   clk_pcie,
     input                   clk_sys,
+    // controls already carried into clk_pcie (dshadow2fifo copies are clk_sys)
+    input                   cfgtlp_en,
+    input                   cfgtlp_zero,
+    input                   cfgtlp_wren,
     IfAXIS128.sink_lite     tlps_in,
     input [15:0]            pcie_id,
     IfAXIS128.source        tlps_cfg_rsp,
@@ -37,7 +43,26 @@ module pcileech_tlps128_cfgspace_shadow(
     // ----------------------------------------------------------------------------
     wire                usb_rx_rden_out;
     wire                usb_rx_wren_out;
+    wire                usb_rx_valid_fifo;
     wire                usb_rx_valid;
+    wire                usb_tx_valid_fifo;
+
+    // FIFO reset no-access window (pcileech_tlps128_fifo_rst_window) for the
+    // two USB FIFOs below (shared reset and clocks). Requests and replies that
+    // meet the window are dropped, as they are dropped by the FIFO reset. A
+    // read that would return no-access-zone output could otherwise turn into
+    // a shadow configuration space write.
+    wire                acc_sys;        // clk_sys:  the FIFOs may be accessed
+    wire                acc_pcie;       // clk_pcie: the FIFOs may be accessed
+    pcileech_tlps128_fifo_rst_window i_rst_window(
+        .rst            ( rst_sys                   ),
+        .clk_sys        ( clk_sys                   ),
+        .clk_pcie       ( clk_pcie                  ),
+        .acc_sys        ( acc_sys                   ),
+        .acc_pcie       ( acc_pcie                  )
+    );
+    assign usb_rx_valid          = usb_rx_valid_fifo && acc_pcie;
+    assign dshadow2fifo.tx_valid = usb_tx_valid_fifo && acc_sys;
     wire                usb_rx_rden = usb_rx_valid && usb_rx_rden_out;
     wire                usb_rx_wren = usb_rx_valid && usb_rx_wren_out;
     wire    [3:0]       usb_rx_be;
@@ -45,16 +70,16 @@ module pcileech_tlps128_cfgspace_shadow(
     wire    [9:0]       usb_rx_addr;
     wire                usb_rx_addr_lo;
     fifo_49_49_clk2 i_fifo_49_49_clk2(
-        .rst            ( rst                       ),
+        .rst            ( rst_fifo                  ),
         .wr_clk         ( clk_sys                   ),
         .rd_clk         ( clk_pcie                  ),
-        .wr_en          ( dshadow2fifo.rx_rden || dshadow2fifo.rx_wren ),
+        .wr_en          ( (dshadow2fifo.rx_rden || dshadow2fifo.rx_wren) && acc_sys ),
         .din            ( {dshadow2fifo.rx_rden, dshadow2fifo.rx_wren, dshadow2fifo.rx_addr_lo, dshadow2fifo.rx_addr, dshadow2fifo.rx_be, dshadow2fifo.rx_data} ),
         .full           (                           ),
-        .rd_en          ( 1'b1                      ),
+        .rd_en          ( acc_pcie                  ),
         .dout           ( {usb_rx_rden_out, usb_rx_wren_out, usb_rx_addr_lo, usb_rx_addr, usb_rx_be, usb_rx_data} ),    
         .empty          (                           ),
-        .valid          ( usb_rx_valid              )
+        .valid          ( usb_rx_valid_fifo         )
     );
 
     // ----------------------------------------------------------------------------
@@ -62,9 +87,9 @@ module pcileech_tlps128_cfgspace_shadow(
     // (1) PCIe (if enabled), (2) USB, (3) INTERNAL.
     // Collisions will be discarded (it's assumed that they'll be very rare)
     // ----------------------------------------------------------------------------
-    wire            bram_wr_1_tlp = pcie_rx_wren & dshadow2fifo.cfgtlp_en;
+    wire            bram_wr_1_tlp = pcie_rx_wren & cfgtlp_en;
     wire            bram_wr_2_usb = ~bram_wr_1_tlp & usb_rx_wren;
-    wire [3:0]      bram_wr_be = bram_wr_1_tlp ? (dshadow2fifo.cfgtlp_wren ? pcie_rx_be : 4'b0000) : (bram_wr_2_usb ? usb_rx_be : 4'b0000);
+    wire [3:0]      bram_wr_be = bram_wr_1_tlp ? (cfgtlp_wren ? pcie_rx_be : 4'b0000) : (bram_wr_2_usb ? usb_rx_be : 4'b0000);
     wire [31:0]     bram_wr_data = bram_wr_1_tlp ? pcie_rx_data : (bram_wr_2_usb ? usb_rx_data : 32'h00000000);
     
     // ----------------------------------------------------------------------------
@@ -81,11 +106,11 @@ module pcileech_tlps128_cfgspace_shadow(
     wire [7:0]      bram_rd_tag;
     wire [9:0]      bram_rd_addr;
     wire [31:0]     bram_rd_data;
-    wire [31:0]     bram_rd_data_z  = dshadow2fifo.cfgtlp_zero ? 32'h00000000 : bram_rd_data;
+    wire [31:0]     bram_rd_data_z  = cfgtlp_zero ? 32'h00000000 : bram_rd_data;
     wire            bram_rd_valid   = (bram_rd_tp == `S_SHADOW_CFGSPACE_TLP);
     wire            bram_rd_tlpwr;
     
-    wire            bram_rd_1_tlp   = pcie_rx_rden & dshadow2fifo.cfgtlp_en;
+    wire            bram_rd_1_tlp   = pcie_rx_rden & cfgtlp_en;
     wire            bram_tlp        = bram_rd_1_tlp | bram_wr_1_tlp;
     wire            bram_rd_2_usb   = ~bram_tlp & usb_rx_rden;
     wire [1:0]      bram_rdreq_tp   = bram_tlp ? `S_SHADOW_CFGSPACE_TLP : (bram_rd_2_usb ? `S_SHADOW_CFGSPACE_USB : `S_SHADOW_CFGSPACE_IDLE);
@@ -127,16 +152,16 @@ module pcileech_tlps128_cfgspace_shadow(
     
     // USB REPLY:
     fifo_43_43_clk2 i_fifo_43_43_clk2(
-        .rst            ( rst                       ),
+        .rst            ( rst_fifo                  ),
         .wr_clk         ( clk_pcie                  ),
         .rd_clk         ( clk_sys                   ),
-        .wr_en          ( (bram_rd_tp == `S_SHADOW_CFGSPACE_USB) ),
+        .wr_en          ( (bram_rd_tp == `S_SHADOW_CFGSPACE_USB) && acc_pcie ),
         .din            ( {bram_rd_tag[0], bram_rd_addr, bram_rd_data_z} ),
         .full           (                           ),
-        .rd_en          ( 1'b1                      ),
+        .rd_en          ( acc_sys                   ),
         .dout           ( {dshadow2fifo.tx_addr_lo, dshadow2fifo.tx_addr, dshadow2fifo.tx_data} ),    
         .empty          (                           ),
-        .valid          ( dshadow2fifo.tx_valid     )
+        .valid          ( usb_tx_valid_fifo         )
     );
     
 endmodule
@@ -184,7 +209,10 @@ module pcileech_cfgspace_pcie_tx(
     
     assign tlps_cfg_rsp.tkeepdw = (tx_tp ? 4'b1111 : 4'b0111);
     assign tlps_cfg_rsp.tlast = 1;
-    assign tlps_cfg_rsp.tuser = 0;
+    // Every config completion is one beat: mark it first ([0]) and last ([1]),
+    // as IfAXIS128 requires. The requester gate on the merged TX stream finds
+    // packet starts by tuser[0] and refuses an unmarked beat as an orphan.
+    assign tlps_cfg_rsp.tuser = 9'b0_0000_0011;
     assign tlps_cfg_rsp.has_data = ~tx_empty;    
 endmodule
 

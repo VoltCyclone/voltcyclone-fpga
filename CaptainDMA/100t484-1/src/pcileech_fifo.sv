@@ -209,7 +209,7 @@ module pcileech_fifo #(
     localparam          RWPOS_DRP_WR_EN             = 21;
     localparam          RWPOS_GLOBAL_SYSTEM_RESET   = 31;
     
-    wire    [319:0]     ro;
+    wire    [895:0]     ro;
     reg     [239:0]     rw;
     
     // special non-user accessible registers 
@@ -246,10 +246,18 @@ module pcileech_fifo #(
     // PCIe
     assign ro[272]      = pcie_present;                 // +022: PCIe PRSNT#
     assign ro[273]      = pcie_perst_n;                 //       PCIe PERST#
-    assign ro[287:274]  = 0;                            //       SLACK
+    assign ro[274]      = dcom.com_status[0];           //       FT601 TX accepted after refusal (sticky)
+    assign ro[287:275]  = 0;                            //       SLACK
     // CUSTOM_VALUE
     assign ro[319:288]  = PARAM_CUSTOM_VALUE;           // +024: CUSTOM VALUE
-    // +028
+    // PCIe REQUESTER STATUS (R1): coherent clk_pcie snapshot, layout in pcileech_req_status.sv
+    assign ro[831:320]  = dpcie.req_status;             // +028: MAGIC/VERSION 0x5201 .. +067
+    // PCIe DRP STARTUP (R1): reset-held DRP plan status
+    assign ro[847:832]  = dpcie.drp_status[15:0];       // +068: [0] drp_ok, [1] last attempt failed, [3:2] reason (1 rdy timeout, 2 base, 3 verify), [4] any failure (sticky), [15:8] host DRP timeouts
+    assign ro[863:848]  = dpcie.drp_status[31:16];      // +06A: [7:0] failed attempts, [15:8] host plan-address writes refused (saturating)
+    assign ro[879:864]  = dpcie.drp_status[47:32];      // +06C: word read at the start of the last attempt
+    assign ro[895:880]  = dpcie.drp_status[63:48];      // +06E: word read back by the last attempt
+    // +070
     
     // ------------------------------------------------------------------------
     // INITIALIZATION/RESET BLOCK _AND_
@@ -308,11 +316,6 @@ module pcileech_fifo #(
     
     always @ ( posedge clk )
          _pcie_core_config <= rw[207:128];
-    assign dpcie.pcie_cfg_subsys_vend_id                = _pcie_core_config[0+:16];
-    assign dpcie.pcie_cfg_subsys_id                     = _pcie_core_config[16+:16];
-    assign dpcie.pcie_cfg_vend_id                       = _pcie_core_config[32+:16];
-    assign dpcie.pcie_cfg_dev_id                        = _pcie_core_config[48+:16];
-    assign dpcie.pcie_cfg_rev_id                        = _pcie_core_config[64+:8];
     assign dpcie.pcie_rst_core                          = _pcie_core_config[72];
     assign dpcie.pcie_rst_subsys                        = _pcie_core_config[73];
     assign dshadow2fifo.cfgtlp_en                       = _pcie_core_config[74];

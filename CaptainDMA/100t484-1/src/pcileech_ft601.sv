@@ -51,12 +51,33 @@ module pcileech_ft601(
     `define S_FT601_TX_COOLDOWN1 4'hb
     `define S_FT601_TX_COOLDOWN2 4'hc
 
+    // Element 0 is reproduced by the g_ft601_data_off pad registers, which
+    // drive the pads; FT601_DATA_OUT[0] itself has no remaining loads.
                         bit [31:0]      FT601_DATA_OUT[5];
     (* KEEP = "TRUE" *) wire            FWD;
-    (* KEEP = "TRUE" *) bit             OE                  = 1'b1;
     (* KEEP = "TRUE" *) bit [3:0]       data_cooldown_count = 0;
     (* KEEP = "TRUE" *) bit [2:0]       data_queue_count    = 0;     
     (* KEEP = "TRUE" *) bit [3:0]       state               = `S_FT601_IDLE;
+
+    // Per-pin 3-state controls for FT601_DATA[31:0] (bits 31:0) and
+    // FT601_BE[3:0] (bits 35:32). Each bit is !OE: 1 = release the pad,
+    // 0 = FPGA drives it. Each bit feeds its OBUFT/IOBUF T pin directly, with
+    // no inverter LUT in between, so it can be packed into the OLOGIC TFF.
+    // Preserve the former OE register's cycle behavior and power-on drive
+    // state, with inverted polarity. The old OE register and its multicycle
+    // exception are removed; these outputs are timed as single-cycle paths.
+    //   IOB           - request OLOGIC TFF packing.
+    //   KEEP          - stop synthesis from merging the 36 identical
+    //                   registers (merging is on by default, see Synth 8-3886)
+    //                   back into one fabric FF.
+    //   EXTRACT_RESET - keep rst in the D logic, not on the FF's set/reset
+    //                   pin. The TFF shares the OLOGIC set/reset with the OFF
+    //                   (g_ft601_data_off, R tied low), so it must not use it
+    //                   either (DRC AVAL-250).
+    // No DONT_TOUCH: the default opt_design does not merge equivalent drivers,
+    // and DONT_TOUCH would also block phys_opt on these FFs.
+    (* IOB = "TRUE", KEEP = "TRUE", EXTRACT_RESET = "NO" *)
+                        bit [35:0]      ft601_t             = 36'h0;
 
 
 
@@ -79,8 +100,47 @@ module pcileech_ft601(
     // FT245 TX / DATA OUTPUT BELOW:
     // -------------------------------------------------------------------------        
 
-    assign FT601_BE     = OE ? 4'b1111 : 4'bzzzz;
-    assign FT601_DATA   = OE ? {FT601_DATA_OUT[0][7:0], FT601_DATA_OUT[0][15:8], FT601_DATA_OUT[0][23:16], FT601_DATA_OUT[0][31:24]} : 32'hzzzzzzzz;
+    // Pad data registers (OLOGIC OFF). They mirror FT601_DATA_OUT[0] cycle for
+    // cycle, with no set/reset pin in use, so each can share an OLOGIC with
+    // its tristate FF (whose R is also tied low). The v2 routed build showed
+    // the inferred FT601_DATA_OUT_reg[0][*] packed with S/R on the cooldown
+    // reset net despite EXTRACT_RESET, which triggers DRC AVAL-250 and leaves
+    // the data TFFs in fabric. An instantiated FDRE gives synthesis no reset
+    // to extract. The reset load moves into D/CE:
+    //   CE = reset load | shift from [1] | write of din into index 0
+    //   D  = 32'h66665555 on reset, din on write to index 0, else [1]
+    // This is the same priority as the FT601_DATA_OUT[0] logic below: reset,
+    // then din (the last NBA wins), then shift, otherwise hold. Q drives only
+    // the pad, so packing needs no replication.
+    // INIT 0 matches the RTL power-on value of FT601_DATA_OUT[0] ('bit').
+    wire        ft601_d0_rst  = rst || (data_cooldown_count == 4'hf);
+    wire        ft601_d0_wr   = din_wr_en && ((data_queue_count - (FWD ? 3'b001 : 3'b000)) == 3'b000);
+    wire        ft601_d0_shft = FWD && (data_queue_count > 1);
+    wire        ft601_d0_ce   = ft601_d0_rst || ft601_d0_wr || ft601_d0_shft;
+    wire [31:0] ft601_d0_d    = ft601_d0_rst ? 32'h66665555 : (ft601_d0_wr ? din : FT601_DATA_OUT[1]);
+    wire [31:0] ft601_d0_q;
+    wire [31:0] ft601_data_o  = {ft601_d0_q[7:0], ft601_d0_q[15:8], ft601_d0_q[23:16], ft601_d0_q[31:24]};
+    genvar i;
+    generate
+        for ( i = 0; i < 32; i = i + 1 ) begin : g_ft601_data_off
+            (* IOB = "TRUE" *)
+            FDRE #( .INIT(1'b0) ) i_off (
+                .C  ( clk               ),
+                .CE ( ft601_d0_ce       ),
+                .R  ( 1'b0              ),
+                .D  ( ft601_d0_d[i]     ),
+                .Q  ( ft601_d0_q[i]     )
+            );
+        end
+    endgenerate
+    generate
+        for ( i = 0; i < 32; i = i + 1 ) begin : g_ft601_data_obuft
+            assign FT601_DATA[i] = ft601_t[i] ? 1'bz : ft601_data_o[i];
+        end
+        for ( i = 0; i < 4; i = i + 1 ) begin : g_ft601_be_obuft
+            assign FT601_BE[i]   = ft601_t[32 + i] ? 1'bz : 1'b1;
+        end
+    endgenerate
     assign din_req_data = !rst && (data_queue_count == 2) || (data_queue_count == 3);
     assign FWD          = !rst && !FT601_TXE_N && (data_queue_count != 0) && (state == `S_FT601_TX_ACTIVE);
 
@@ -125,7 +185,8 @@ module pcileech_ft601(
 
     always @ ( posedge clk )
         begin
-            OE          <=  (rst || FT601_RXF_N || ((state != `S_FT601_RX_ACTIVE) && (state != `S_FT601_RX_WAIT3) && (state != `S_FT601_RX_WAIT2) && (state != `S_FT601_RX_COOLDOWN1) && (state != `S_FT601_RX_COOLDOWN2)));
+            // Former OE next-state expression, inverted, into each per-pin TFF.
+            ft601_t     <= {36{!(rst || FT601_RXF_N || ((state != `S_FT601_RX_ACTIVE) && (state != `S_FT601_RX_WAIT3) && (state != `S_FT601_RX_WAIT2) && (state != `S_FT601_RX_COOLDOWN1) && (state != `S_FT601_RX_COOLDOWN2)))}};
             FT601_OE_N  <=  (rst || FT601_RXF_N || ((state != `S_FT601_RX_ACTIVE) && (state != `S_FT601_RX_WAIT3) && (state != `S_FT601_RX_WAIT2)));
             FT601_RD_N  <=  (rst || FT601_RXF_N || ((state != `S_FT601_RX_ACTIVE) && (state != `S_FT601_RX_WAIT3)));
             FT601_WR_N  <=  !(!rst && !FT601_TXE_N && ((state == `S_FT601_TX_WAIT2) || ((state == `S_FT601_TX_ACTIVE) && (din_wr_en || (data_queue_count > 1)))));

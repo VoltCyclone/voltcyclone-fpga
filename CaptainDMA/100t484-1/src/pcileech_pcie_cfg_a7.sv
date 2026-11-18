@@ -11,7 +11,9 @@
 `include "pcileech_header.svh"
 
 module pcileech_pcie_cfg_a7(
-    input                   rst,
+    input                   rst,            // clk_pcie synchronous reset
+    input                   rst_sys,        // clk_sys register: quarantine of the clk_sys<->clk_pcie FIFOs
+    input                   rst_fifo,       // clk_sys register: rst pins of the clk_sys<->clk_pcie FIFOs
     input                   clk_sys,
     input                   clk_pcie,
     IfPCIeFifoCfg.mp_pcie   dfifo,
@@ -35,7 +37,21 @@ module pcileech_pcie_cfg_a7(
     reg             in_rden;
     wire [63:0]     in_dout;
     wire            in_empty;
-    wire            in_valid;
+    wire            in_valid_fifo;
+
+    // FIFO reset no-access window (pcileech_tlps128_fifo_rst_window): both
+    // FIFOs below share the reset and clocks. Host commands and replies that
+    // meet the window are dropped, as they are dropped by the FIFO reset.
+    wire            acc_sys;            // clk_sys:  the FIFOs may be accessed
+    wire            acc_pcie;           // clk_pcie: the FIFOs may be accessed
+    pcileech_tlps128_fifo_rst_window i_rst_window(
+        .rst            ( rst_sys               ),
+        .clk_sys        ( clk_sys               ),
+        .clk_pcie       ( clk_pcie              ),
+        .acc_sys        ( acc_sys               ),
+        .acc_pcie       ( acc_pcie              )
+    );
+    wire            in_valid = in_valid_fifo && acc_pcie;
     
     reg [63:0]      in_data64;
     wire [31:0]     in_data32   = in_data64[63:32];
@@ -43,16 +59,16 @@ module pcileech_pcie_cfg_a7(
     wire [3:0]      in_type     = in_data64[15:12];
 	
     fifo_64_64 i_fifo_pcie_cfg_tx(
-        .rst            ( rst                   ),
+        .rst            ( rst_fifo              ),
         .wr_clk         ( clk_sys               ),
         .rd_clk         ( clk_pcie              ),
         .din            ( dfifo.tx_data         ),
-        .wr_en          ( dfifo.tx_valid        ),
-        .rd_en          ( in_rden               ),
+        .wr_en          ( dfifo.tx_valid && acc_sys ),
+        .rd_en          ( in_rden && acc_pcie   ),
         .dout           ( in_dout               ),
         .full           (                       ),
         .empty          ( in_empty              ),
-        .valid          ( in_valid              )
+        .valid          ( in_valid_fifo         )
     );
     
     // ------------------------------------------------------------------------
@@ -62,19 +78,21 @@ module pcileech_pcie_cfg_a7(
     reg             out_wren;
     reg [31:0]      out_data;
     wire            pcie_cfg_rx_almost_full;
+    wire            out_valid_fifo;
+    assign dfifo.rx_valid = out_valid_fifo && acc_sys;
     
     fifo_32_32_clk2 i_fifo_pcie_cfg_rx(
-        .rst            ( rst                   ),
+        .rst            ( rst_fifo              ),
         .wr_clk         ( clk_pcie              ),
         .rd_clk         ( clk_sys               ),
         .din            ( out_data              ),
-        .wr_en          ( out_wren              ),
-        .rd_en          ( dfifo.rx_rd_en        ),
+        .wr_en          ( out_wren && acc_pcie  ),
+        .rd_en          ( dfifo.rx_rd_en && acc_sys ),
         .dout           ( dfifo.rx_data         ),
         .full           (                       ),
         .almost_full    ( pcie_cfg_rx_almost_full ),
         .empty          (                       ),
-        .valid          ( dfifo.rx_valid        )
+        .valid          ( out_valid_fifo        )
     );
     
     // ------------------------------------------------------------------------
@@ -198,6 +216,9 @@ module pcileech_pcie_cfg_a7(
             
             rwi_cfg_mgmt_rd_en <= 1'b0;
             rwi_cfg_mgmt_wr_en <= 1'b0;
+            rwi_tlp_static_valid    <= 1'b0;    // static TLP source: nothing armed
+            rwi_tlp_static_2nd      <= 1'b1;
+            rwi_tlp_static_has_data <= 1'b0;
     
             // MAGIC
             rw[15:0]    <= 16'h6745;                // +000:
@@ -306,11 +327,21 @@ module pcileech_pcie_cfg_a7(
         rw[(256+32*1+00)+:8], rw[(256+32*1+08)+:8], rw[(256+32*1+16)+:8], rw[(256+32*1+24)+:8],   // STATIC TLP DWORD1
         rw[(256+32*0+00)+:8], rw[(256+32*0+08)+:8], rw[(256+32*0+16)+:8], rw[(256+32*0+24)+:8]    // STATIC TLP DWORD0
     };
-    assign tlps_static.tkeepdw              = rwi_tlp_static_2nd ? { rw[224+2*7], rw[224+2*6], rw[224+2*5], rw[224+2*4] } : { rw[224+2*3], rw[224+2*2], rw[224+2*1], rw[224+2*0] };
+    // A presented beat always carries DW0 and always has tvalid: the mux
+    // waits for tvalid && tlast of a selected packet, so a beat whose valid
+    // bits were changed by the host after arming must still complete the
+    // handshake (the packet's content is then the host's to get right).
+    assign tlps_static.tkeepdw              = rwi_tlp_static_2nd ? { rw[224+2*7], rw[224+2*6], rw[224+2*5], 1'b1 } : { rw[224+2*3], rw[224+2*2], rw[224+2*1], 1'b1 };
     assign tlps_static.tlast                = rwi_tlp_static_2nd || rw[224+2*3+1] || rw[224+2*2+1] || rw[224+2*1+1] || rw[224+2*0+1];
     assign tlps_static.tuser[0]             = !rwi_tlp_static_2nd;
-    assign tlps_static.tvalid               = rwi_tlp_static_valid && tlps_static.tkeepdw[0];
-    assign tlps_static.has_data             = rwi_tlp_static_has_data;
+    assign tlps_static.tvalid               = rwi_tlp_static_valid;
+    // Arm only a well-formed packet: DW0 valid, and either a last bit in the
+    // first half or DW4 valid for the second beat.
+    wire   rwi_tlp_static_wellformed        = rw[224+2*0] && (rw[224+2*3+1] || rw[224+2*2+1] || rw[224+2*1+1] || rw[224+2*0+1] || rw[224+2*4]);
+    // A packet is available until its last beat is presented. The TX mux
+    // re-selects at a last beat when has_data is high, so has_data must be
+    // low in that cycle, or the mux would wait for a packet that never comes.
+    assign tlps_static.has_data             = rwi_tlp_static_has_data && !(rwi_tlp_static_valid && tlps_static.tlast);
         
     assign pcie_id                          = ro[79:64];
     
@@ -399,7 +430,14 @@ module pcileech_pcie_cfg_a7(
                     end
                     
                 // STATIC_TLP TRANSMIT
-                if ( (rwi_tlp_static_valid && rwi_tlp_static_2nd) || ~rw[RWPOS_CFG_STATIC_TLP_TX_EN] ) begin    // STATE (3)
+                // STATE (3): the beat with tlast was presented. A packet that
+                // ends in its first beat ends there (no empty second pull).
+                // An armed packet is never withdrawn: the TX mux may already
+                // have selected it and would then wait for it forever. So
+                // clearing TX_EN (by the host, or after the last of COUNT)
+                // stops new packets only, and the arming state below needs
+                // TX_EN and no packet already armed.
+                if ( rwi_tlp_static_valid && tlps_static.tlast ) begin    // STATE (3)
                     rwi_tlp_static_valid    <= 1'b0;
                     rwi_tlp_static_has_data <= 1'b0;
                 end
@@ -411,7 +449,7 @@ module pcileech_pcie_cfg_a7(
                      rwi_tlp_static_valid   <= 1'b1;
                      rwi_tlp_static_2nd     <= 1'b1;
                 end
-                else if ( ((tickcount64[0+:16] & rw[240+:16]) == rw[240+:16]) & (rw[640+:32] > 0) & rw[224+2*0] ) begin   // IDLE STATE (0)
+                else if ( !rwi_tlp_static_has_data & rw[RWPOS_CFG_STATIC_TLP_TX_EN] & ((tickcount64[0+:16] & rw[240+:16]) == rw[240+:16]) & (rw[640+:32] > 0) & rwi_tlp_static_wellformed ) begin   // IDLE STATE (0)
                     rwi_tlp_static_has_data <= 1'b1;
                     rwi_tlp_static_2nd      <= 1'b1;
                     rw[640+:32] <= rw[640+:32] - 1;     // count - 1

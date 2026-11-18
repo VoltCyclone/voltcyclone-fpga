@@ -110,12 +110,27 @@ set files [list \
  [file normalize "${origin_dir}/src/pcileech_com.sv" ]\
  [file normalize "${origin_dir}/src/pcileech_fifo.sv"]\
  [file normalize "${origin_dir}/src/pcileech_ft601.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_ft601_clk.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_ft601_phy.sv"]\
  [file normalize "${origin_dir}/src/pcileech_mux.sv"]\
  [file normalize "${origin_dir}/src/pcileech_pcie_a7.sv"]\
  [file normalize "${origin_dir}/src/pcileech_pcie_cfg_a7.sv"]\
  [file normalize "${origin_dir}/src/pcileech_pcie_tlp_a7.sv"]\
  [file normalize "${origin_dir}/src/pcileech_tlps128_bar_controller.sv"]\
  [file normalize "${origin_dir}/src/pcileech_tlps128_cfgspace_shadow.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_defs.svh"]\
+ [file normalize "${origin_dir}/src/pcileech_req_classify.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_tagalloc.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_cto_limits.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_np_cap.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_gate.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_gate_axis.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_table.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_tx_obs.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_rx_cpl.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_err.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_req_status.sv"]\
+ [file normalize "${origin_dir}/src/pcileech_pcie_drp_startup.sv"]\
  [file normalize "${origin_dir}/src/pcileech_100t484_x1_top.sv"]\
 ]
 set imported_files [import_files -fileset sources_1 $files]
@@ -137,6 +152,14 @@ set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
 
 set file "src/pcileech_ft601.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_ft601_clk.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_ft601_phy.sv"
 set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
 
@@ -168,11 +191,71 @@ set file "src/pcileech_100t484_x1_top.sv"
 set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
 set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
 
+# R1 requester tracking
+set file "src/pcileech_req_defs.svh"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "Verilog Header" -objects $file_obj
+
+set file "src/pcileech_req_classify.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_tagalloc.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_cto_limits.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_gate.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_gate_axis.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_table.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_tx_obs.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_rx_cpl.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_err.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_req_status.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
+set file "src/pcileech_pcie_drp_startup.sv"
+set file_obj [get_files -of_objects [get_filesets sources_1] [list "*$file"]]
+set_property -name "file_type" -value "SystemVerilog" -objects $file_obj
+
 
 # Set 'sources_1' fileset properties
 set obj [get_filesets sources_1]
 set_property -name "top" -value "pcileech_100t484_x1_top" -objects $obj
 set_property -name "top_auto_set" -value "0" -objects $obj
+
+# R1 requester-tracking plan. The generator writes requester_plan.tcl next to
+# this script; it sets the top-level generics (REQ_CLK_PCIE_HZ, DRP_PLAN_*,
+# DRP_RDY_TIMEOUT_CYCLES) on sources_1. Without it the top's plan parameters
+# keep their fatal defaults and elaboration stops, by design.
+set requester_plan [file normalize "${origin_dir}/requester_plan.tcl"]
+if {[file exists $requester_plan]} {
+  source $requester_plan
+} else {
+  puts "WARNING: $requester_plan not found; synthesis will fail until the requester plan is generated."
+}
 
 
 # Set 'sources_1' fileset object
@@ -593,6 +676,33 @@ set file "src/pcileech_100t484_x1_captaindma_100t.xdc"
 set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
 set_property -name "file_type" -value "XDC" -objects $file_obj
 
+# FT601 MMCM clock constraints, only for the MMCM PHY (top generic
+# FT601_PHY_MMCM, default 1): they name cells a legacy build (FT601_PHY_MMCM=0)
+# lacks. The file is always imported; ::pcileech_board::sync_ft601_xdc enables
+# it from the final generic. It runs at the end of this script, and a flow that
+# sets generics later (such as the generator's requester plan) calls it again.
+set file "[file normalize ${origin_dir}/src/pcileech_ft601_mmcm.xdc]"
+set file_imported [import_files -fileset constrs_1 [list $file]]
+set file "src/pcileech_ft601_mmcm.xdc"
+set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
+set_property -name "file_type" -value "XDC" -objects $file_obj
+
+namespace eval ::pcileech_board {}
+proc ::pcileech_board::sync_ft601_xdc {} {
+  set mmcm 1
+  foreach g [get_property generic [get_filesets sources_1]] {
+    if {[regexp {^FT601_PHY_MMCM=(?:[0-9]*'[sS]?[bdhBDH])?([0-9a-fA-F]+)$} $g -> v]} {
+      set mmcm [expr {[string trimleft $v 0] ne ""}]
+    } elseif {[string match FT601_PHY_MMCM=* $g]} {
+      error "FT601_PHY_MMCM generic '$g' not understood; use FT601_PHY_MMCM=0 or 1"
+    }
+  }
+  set xdc [get_files -of_objects [get_filesets constrs_1] *pcileech_ft601_mmcm.xdc]
+  if {[llength $xdc] != 1} { error "expected one pcileech_ft601_mmcm.xdc in constrs_1, got '$xdc'" }
+  set_property IS_ENABLED $mmcm $xdc
+  puts "INFO: FT601_PHY_MMCM=$mmcm: pcileech_ft601_mmcm.xdc [expr {$mmcm ? {enabled} : {disabled (legacy FT601 PHY)}}]."
+}
+
 # Set 'constrs_1' fileset properties
 set obj [get_filesets constrs_1]
 set_property -name "target_part" -value "xc7a100tfgg484-1" -objects $obj
@@ -911,8 +1021,9 @@ set_property -name "part" -value "xc7a100tfgg484-1" -objects $obj
 set_property -name "strategy" -value "Vivado Implementation Defaults" -objects $obj
 set_property -name "steps.phys_opt_design.is_enabled" -value "1" -objects $obj
 set_property -name "steps.opt_design.args.directive" -value "ExploreWithRemap" -objects $obj
-set_property -name "steps.opt_design.args.more_options" -value "-debug_log" -objects $obj
+set_property -name {steps.opt_design.args.more options} -value "-debug_log" -objects $obj
 set_property -name "steps.opt_design.tcl.post" -value "[file normalize "$origin_dir/opt_design_post.tcl"]" -objects $obj
+set_property -name "steps.place_design.tcl.post" -value "[file normalize "$origin_dir/place_design_post.tcl"]" -objects $obj
 set_property -name "steps.write_bitstream.args.bin_file" -value "1" -objects $obj
 set_property -name "steps.write_bitstream.args.readback_file" -value "0" -objects $obj
 set_property -name "steps.write_bitstream.args.verbose" -value "0" -objects $obj
@@ -971,3 +1082,6 @@ move_dashboard_gadget -name {drc_1} -row 2 -col 0
 move_dashboard_gadget -name {timing_1} -row 0 -col 1
 move_dashboard_gadget -name {utilization_2} -row 1 -col 1
 move_dashboard_gadget -name {methodology_1} -row 2 -col 1
+
+# FT601 MMCM constraints follow the final FT601_PHY_MMCM generic.
+::pcileech_board::sync_ft601_xdc
