@@ -16,11 +16,12 @@
 //     packet in the same position, in order;
 //   - packets clear of the reset window are all delivered.
 // The host capture discards a packet in progress when the subsystem reset
-// asserts. That models pcileech_tlps128_dst_fifo, which is reset by
-// rst_subsys_sys (asserted in clk_sys no later than rst_subsys) and blocks
-// writes during its reset window, so a head whose tail the filter drops never
-// reaches the host. That ordering belongs to pcileech_pcie_a7_rst and is not
-// re-verified here.
+// asserts, which models pcileech_tlps128_dst_fifo. With the real FIFO, the
+// production reset generator and this filter, sim/subsys_reset (scoreboard B)
+// checks the host side. A prefix read before the reset may reach the host, and
+// a first beat then follows. No tail reaches the host after the reset,
+// because dst_fifo admits a continuation beat only after the packet's first
+// beat. Its mutant rx_dst_admits_tail fails with SUBSYS_B_ORPHAN.
 `timescale 1ns / 1ps
 `include "pcileech_header.svh"
 module tb_rx_subsys_reset;

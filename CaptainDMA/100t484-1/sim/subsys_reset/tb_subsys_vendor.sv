@@ -304,12 +304,24 @@ module tb_subsys_vendor;
     assign dtlp.tx_valid = h_tx_valid;
     assign dtlp.rx_rd_en = h_rx_rd_en;
 
+    // Production order: the RX stream reaches dst_fifo through the host
+    // filter (reset by rst_subsys); the shadow takes it unfiltered.
+    IfAXIS128 rxf();
+    pcileech_tlps128_filter u_filter(
+        .rst                ( rst_subsys        ),
+        .clk_pcie           ( clk_pcie          ),
+        .alltlp_filter      ( 1'b0              ),
+        .cfgtlp_filter      ( 1'b0              ),
+        .tlps_in            ( rxs.sink_lite     ),
+        .tlps_out           ( rxf.source_lite   )
+    );
+
     pcileech_tlps128_dst_fifo u_dst(
         .rst                ( rst_subsys_sys    ),
         .rst_fifo           ( rst_subsys_fifo   ),
         .clk_pcie           ( clk_pcie          ),
         .clk_sys            ( clk_sys           ),
-        .tlps_in            ( rxs.sink_lite     ),
+        .tlps_in            ( rxf.sink_lite     ),
         .dfifo              ( dtlp.mp_pcie      )
     );
 
@@ -596,14 +608,18 @@ module tb_subsys_vendor;
     always @ ( posedge soft_rst ) n_soft = n_soft + 1;
 
     // ------------------------------------------------------------------
-    // B: PCIe RX packets -> dst FIFO -> host side
-    // DW = { id[19:0], len[3:0], idx[3:0], 4'hB }; id < 8192 keeps DW0[31:25]
-    // clear of CfgRd/CfgWr for the shadow.
+    // B: PCIe RX packets -> host filter -> dst FIFO -> host side
+    // DW = { 7'd0, id[12:0], len[4:0], idx[4:0], 2'b11 }; DW0[31:25] = 0 keeps
+    // headers clear of CfgRd/CfgWr for the shadow. Packets are 1-31 DWs, and
+    // the source pauses inside a packet now and then (20-420 clk_pcie), so
+    // packets straddle whole subsystem resets. Like the requester's completion
+    // receiver, the source runs through subsystem resets (F1).
     // ------------------------------------------------------------------
     integer  b_ep [0:MAXP-1];
     bit      b_req[0:MAXP-1];
     bit      b_got[0:MAXP-1];
     integer  b_id = 0, b_len = 1, b_idx = 0, b_last_id = -1, b_trunc = 0, b_deliv = 0;
+    integer  b_gap = 0, b_straddle = 0, b_first_ep = 0;
     integer  b_cur = -1, b_cnt = 0, b_cur_len = 0;
     reg [127:0] rx_tdata = 0;
     reg [3:0]   rx_tkeep = 0;
@@ -619,9 +635,12 @@ module tb_subsys_vendor;
         rx_tlast  <= 1'b0;
         rx_first  <= 1'b0;
         rx_tkeep  <= 4'b0;
-        if ( (stim_on || b_idx != 0) && ($urandom % 100) < 45 && b_id < 8192 ) begin
+        if ( b_gap > 0 )
+            b_gap = b_gap - 1;
+        else if ( (stim_on || b_idx != 0) && ($urandom % 100) < 45 && b_id < 8192 ) begin
             if ( b_idx == 0 ) begin
-                b_len      = 1 + ($urandom % 8);
+                b_len      = (($urandom % 10) < 7) ? 1 + ($urandom % 8) : 9 + ($urandom % 23);
+                b_first_ep = epoch;
                 b_ep[b_id] = epoch;
                 b_req[b_id]= settled_now();
                 b_got[b_id]= 1'b0;
@@ -630,7 +649,7 @@ module tb_subsys_vendor;
             rx_first  <= (b_idx == 0);
             for ( int i = 0; i < 4; i++ ) begin
                 if ( b_idx + i < b_len ) begin
-                    rx_tdata[32*i +: 32] <= { b_id[19:0], b_len[3:0], 4'(b_idx + i), 4'hB };
+                    rx_tdata[32*i +: 32] <= { 7'd0, b_id[12:0], b_len[4:0], 5'(b_idx + i), 2'b11 };
                     rx_tkeep[i]          <= 1'b1;
                 end
                 else
@@ -638,19 +657,28 @@ module tb_subsys_vendor;
             end
             if ( b_idx + 4 >= b_len ) begin
                 rx_tlast <= 1'b1;
+                if ( epoch != b_first_ep ) b_straddle = b_straddle + 1;
                 b_id  = b_id + 1;
                 b_idx = 0;
             end
-            else
+            else begin
                 b_idx = b_idx + 4;
+                if ( ($urandom % 25) == 0 ) b_gap = 20 + ($urandom % 400);
+            end
         end
     end
 
     task automatic b_dw(input [31:0] dw, input bit first, input bit last);
         integer idv, lenv, idxv;
-        idv = dw[31:12]; lenv = dw[11:8]; idxv = dw[7:4];
+        idv = dw[24:12]; lenv = dw[11:7]; idxv = dw[6:2];
+        if ( dw[31:25] != 7'd0 )
+            err($sformatf("SUBSYS_B_FORM dw=%08h", dw));
         if ( first ) begin
-            if ( b_cur >= 0 ) b_trunc = b_trunc + 1;
+            // The open packet is discarded at each rst_subsys_sys rise (a prefix
+            // may reach the host, then a first beat follows). Any other cut is
+            // a failure.
+            if ( b_cur >= 0 )
+                err($sformatf("SUBSYS_B_CUT pkt=%0d cut by pkt=%0d without a reset", b_cur, idv));
             if ( idv >= MAXP || idv <= b_last_id )
                 err($sformatf("SUBSYS_B_ORDER id=%0d last=%0d", idv, b_last_id));
             else if ( b_ep[idv] != epoch )
@@ -662,7 +690,7 @@ module tb_subsys_vendor;
             err($sformatf("SUBSYS_B_ORPHAN dw=%08h", dw));
             return;
         end
-        dw_check("B", idv, b_cur, b_cnt, b_cur_len, lenv, idxv, 4'hB, dw[3:0]);
+        dw_check("B", idv, b_cur, b_cnt, b_cur_len, lenv, idxv, 3, dw[1:0]);
         b_cnt = b_cnt + 1;
         if ( last ) begin
             if ( b_cnt != b_cur_len )
@@ -956,6 +984,7 @@ module tb_subsys_vendor;
         end
         $display("SUBSYS_STATS resets=%0d A sent=%0d deliv=%0d trunc=%0d B sent=%0d deliv=%0d trunc=%0d C sent=%0d deliv=%0d D sent=%0d deliv=%0d",
                  n_resets, a_id, a_deliv, a_trunc, b_id, b_deliv, b_trunc, c_n, c_deliv, d_n, d_deliv);
+        $display("SUBSYS_RX straddling=%0d (B packets offered across a subsystem reset)", b_straddle);
         $display("SUBSYS_TX bar_sent=%0d bar_deliv=%0d static_deliv=%0d mux_cut=%0d soft_applied=%0d", bar_id, bar_deliv, st_deliv, tx_cut, n_soft);
         if ( CASE == 4 && st_deliv < 15 ) err("SUBSYS_LOW_TRAFFIC static");
         if ( drain_since >= 0.0 ) err("SUBSYS_DRAIN_STUCK request pending at the end");

@@ -35,6 +35,11 @@ SOURCES = (
 A7 = "pcileech_pcie_a7.sv"
 CFG = "pcileech_pcie_cfg_a7.sv"
 SHD = "pcileech_tlps128_cfgspace_shadow.sv"
+TLP = "pcileech_pcie_tlp_a7.sv"
+FILTER_RST = ("filter  <= rst || (tlps_in.tvalid ? filter_next : filter);",
+              "filter  <= (tlps_in.tvalid ? filter_next : filter);")
+DST_ADMIT = ("wire         rx_pass  = tlps_in.tuser[0] ? (acc_pcie && !fifo_full) : (rx_admit && acc_pcie && !fifo_full);",
+             "wire         rx_pass  = acc_pcie && !fifo_full;")
 SEQ_OUT = (".fifo_rst           ( rst_subsys_fifo       ),", ".fifo_rst           ( ),")
 MUTANTS: dict[str, tuple[str, list[tuple[str, str]], int, str]] = {
     # FIFO reset pin follows the request again (no sequencer): adjacent resets.
@@ -86,6 +91,19 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str]], int, str]] = {
         ".rd_en          ( dfifo.rx_rd_en ),")], 0, "SUBSYS_NOACCESS cfg_rx"),
     "shd_req_read_always": (SHD, [(".rd_en          ( acc_pcie                  ),",
         ".rd_en          ( 1'b1                      ),")], 0, "SUBSYS_NOACCESS shd_req"),
+    # F1: the RX source (the requester's completion receiver) keeps going
+    # through a subsystem reset. The dst FIFO window can open inside a packet
+    # whose first beat the closed window refused (the filter, released
+    # earlier, passes that packet whole). Only dst_fifo's rule of admitting a
+    # continuation beat after the packet's first beat keeps its tail off the
+    # host.
+    "rx_dst_admits_tail": (TLP, [DST_ADMIT], 3, "SUBSYS_B_ORPHAN"),
+}
+# Equivalent: must survive (--mutant reports SUBSYS_EQUIVALENT_SURVIVED). The
+# filter's drop state set by rst also drops the tail of a packet cut by the
+# reset, but dst_fifo's first-beat admission already covers every such tail.
+EQUIVALENT: dict[str, tuple[str, list[tuple[str, str]], int, str]] = {
+    "rx_filter_ignores_rst": (TLP, [FILTER_RST], 3, "SUBSYS_B_"),
 }
 # Equivalent, not run: ungating the shadow reply write (bram_rd_tp == USB).
 # Those writes come only from shadow request reads, which are gated by
@@ -127,7 +145,7 @@ def main() -> None:
     ap.add_argument("--case", type=int, choices=(0, 1, 2, 3, 4))
     ap.add_argument("--matrix", action="store_true", help="three clock rate/phase settings")
     ap.add_argument("--keep-going", action="store_true", help="report every case, then fail")
-    ap.add_argument("--mutant", choices=tuple(MUTANTS))
+    ap.add_argument("--mutant", choices=tuple(MUTANTS) + tuple(EQUIVALENT))
     args = ap.parse_args()
 
     work = args.out.resolve()
@@ -143,8 +161,10 @@ def main() -> None:
     if hdr.read_text().count(old_bs) != 1:
         raise ValueError("_bs16 macro changed; review the XSim rewrite")
     hdr.write_text(hdr.read_text().replace(old_bs, "`define _bs16(v)   {v[7:0], v[15:8]}"))
+    equivalent = args.mutant in EQUIVALENT
+    table = EQUIVALENT if equivalent else MUTANTS
     if args.mutant:
-        fname, edits, _case, _marker = MUTANTS[args.mutant]
+        fname, edits, _case, _marker = table[args.mutant]
         text = (src / fname).read_text()
         for old, new in edits:
             if text.count(old) != 1:
@@ -172,7 +192,7 @@ def main() -> None:
     run([vbin / "xelab", "-mt", "4", "-L", "xpm", "-L", "unisims_ver", "-L", "unimacro_ver",
          "work.tb_subsys_vendor", "work.glbl", "-s", "subsys"], work, "elaborate")
 
-    cases = [MUTANTS[args.mutant][2]] if args.mutant else ([args.case] if args.case is not None else [0, 1, 2, 3, 4])
+    cases = [table[args.mutant][2]] if args.mutant else ([args.case] if args.case is not None else [0, 1, 2, 3, 4])
     clocks = [(5.0, 8.0, 1.3)]
     if args.matrix or args.mutant:
         clocks += [(5.0, 4.0, 2.7), (5.0, 6.0, 0.9)]   # clk_pcie 125 MHz, 83 MHz
@@ -184,11 +204,16 @@ def main() -> None:
             for a in (f"CASE={case}", f"SYS_HALF={sh}", f"PCIE_HALF={ph}", f"PHASE={phase}", f"SEED={11 + ci}"):
                 argv += ["-testplusarg", a]
             try:
-                run(argv, work, f"case-{case}-clock-{ci}", expect=MUTANTS[args.mutant][3])
+                run(argv, work, f"case-{case}-clock-{ci}", expect=table[args.mutant][3])
+                if equivalent:
+                    raise SystemExit(f"SUBSYS_EQUIVALENT_KILLED {args.mutant}: one guard alone is not enough")
                 print(f"SUBSYS_RUN_PASS mutant={args.mutant}", flush=True)
                 return
             except RuntimeError:
                 print(f"SUBSYS_MUTANT_SURVIVED_CLOCK {ci}", flush=True)
+        if equivalent:
+            print(f"SUBSYS_EQUIVALENT_SURVIVED {args.mutant}", flush=True)
+            return
         raise SystemExit(f"SUBSYS_MUTANT_SURVIVED {args.mutant}")
     failed = []
     for ci, (sh, ph, phase) in enumerate(clocks):

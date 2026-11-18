@@ -50,6 +50,26 @@ shadow reads. They check order, duplicates, stale delivery across a reset,
 loss of anything offered 3 us after recovery, and that shadow read data never
 changes. Packets cut at a FIFO output by a reset are counted, not failed.
 
+PCIe RX (F1 of the requester integration review). As in production, the RX
+stream reaches the dst FIFO through `pcileech_tlps128_filter`, which is reset
+by `rst_subsys`. The shadow sees the stream unfiltered. The source models the
+requester's completion receiver, which keeps running through subsystem
+resets. Packets are 1-31 DWs, and the source pauses inside a packet for
+20-420 `clk_pcie` cycles now and then, so packets straddle whole resets.
+
+At the host:
+
+- the open packet is discarded at each `rst_subsys_sys` rise, because a prefix
+  read before the reset may already have left;
+- any other cut is a failure (`SUBSYS_B_CUT`);
+- a beat outside a packet is a failure (`SUBSYS_B_ORPHAN`).
+
+`SUBSYS_RX straddling=` counts the packets offered across a reset. The
+`rx_dst_admits_tail` mutant removes `dst_fifo`'s rule that a continuation beat
+is admitted only after the packet's first beat, and must fail. The
+`rx_filter_ignores_rst` mutant removes the filter's drop state at reset; it is
+equivalent and must survive.
+
 Cases: 0 mixed reset sources with running clocks; 1 clk_pcie stopping and
 resuming, with and without the core user reset; 2 adjacent requests 0-20
 clk_sys cycles after the previous request ended (host subsystem reset and the
@@ -70,11 +90,14 @@ for m in fifo_rst_follows_request no_fifo_reset quarantine_ignores_sequence rele
          cfg_tx_write_ungated cfg_rx_read_ungated shd_req_read_always \
          drain_no_stop drain_skips_idle mux_ignores_stop drain_ignores_dead_clock \
          static_old_end static_withdraw_on_disable \
-         static_arm_unchecked static_old_valid; do
+         static_arm_unchecked static_old_valid rx_dst_admits_tail; do
   python3 board/sim/subsys_reset/run_subsys.py --vivado "$XILINX_VIVADO" \
     --board board --models models --out mut-$m --mutant $m
 done
 ```
+
+`--mutant rx_filter_ignores_rst` is an equivalent mutant: it must print
+`SUBSYS_EQUIVALENT_SURVIVED`.
 
 The runner rewrites the staged copy of the `_bs16` header macro for XSim,
 which cannot index a concatenation; its only use passes an identifier.
