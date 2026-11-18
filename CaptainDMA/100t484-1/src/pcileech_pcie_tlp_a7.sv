@@ -137,6 +137,7 @@ module pcileech_tlps128_dst_fifo(
 
     wire         fifo_valid;
     wire         fifo_full;
+    wire         fifo_pfull;    // prog_full: fewer than CAP_BEATS free (see below)
     wire         fifo_rd;
     wire [133:0] fifo_dout;
 
@@ -155,30 +156,44 @@ module pcileech_tlps128_dst_fifo(
     // Whole-TLP admission (clk_pcie). The PCIe RX stream cannot be stalled,
     // so a TLP is either written completely or dropped completely:
     // - a TLP is admitted only at its first beat (tuser[0]), and only if the
-    //   FIFO is accessible and not full;
+    //   FIFO is accessible and prog_full is low. prog_full (constant threshold
+    //   1787 of 2047) asserts on writes at once and deasserts only after reads
+    //   cross into clk_pcie, so it never under-reports. Low means at least
+    //   2047 - 1786 - 2 = 259 free slots, counting the 2 writes of the previous
+    //   TLP the flag may not show yet: room for CAP_BEATS;
+    // - every admitted TLP is capped at CAP_BEATS = 258 beats, the largest
+    //   legal TLP (4 header + 1024 data + 1 digest DW = 1029 DW). Beat 258 is
+    //   written as the last beat and the rest of a longer TLP is dropped (the
+    //   core never delivers one), so an admitted TLP always fits;
     // - beats of a TLP whose first beat was not admitted are dropped;
-    // - if a beat of an admitted TLP is refused (FIFO reset or full), the rest
-    //   of that TLP is dropped, so no suffix is ever written without its head.
-    //   A reset flushes the head too. If the FIFO instead fills up inside a
-    //   TLP (host not draining; not a reset case), the head stays in the FIFO
-    //   without its last beat, as before this change.
+    // - if a beat of an admitted TLP is refused (FIFO reset; full is only a
+    //   backstop now), the rest of that TLP is dropped, so no suffix is ever
+    //   written without its head. A reset flushes the head too.
+    localparam integer CAP_BEATS = 258;
     bit          rx_admit = 0;  // current RX TLP is being written
-    wire         rx_pass  = tlps_in.tuser[0] ? (acc_pcie && !fifo_full) : (rx_admit && acc_pcie && !fifo_full);
+    bit  [8:0]   rx_beats = 0;  // beats of the current admitted TLP written
+    wire         rx_pass  = tlps_in.tuser[0] ? (acc_pcie && !fifo_full && !fifo_pfull) : (rx_admit && acc_pcie && !fifo_full);
+    wire         rx_end   = tlps_in.tlast || (!tlps_in.tuser[0] && rx_beats == CAP_BEATS - 1);
     always @ ( posedge clk_pcie )
-        if ( !acc_pcie )
+        if ( !acc_pcie ) begin
             rx_admit <= 1'b0;
-        else if ( tlps_in.tvalid )
-            rx_admit <= rx_pass && !tlps_in.tlast;
+            rx_beats <= 9'd0;
+        end
+        else if ( tlps_in.tvalid ) begin
+            rx_admit <= rx_pass && !rx_end;
+            rx_beats <= (rx_pass && !rx_end) ? (tlps_in.tuser[0] ? 9'd1 : rx_beats + 9'd1) : 9'd0;
+        end
 
     fifo_134_134_clk2 i_fifo_134_134_clk2 (
         .rst        ( rst_fifo          ),
         .wr_clk     ( clk_pcie          ),
         .rd_clk     ( clk_sys           ),
-        .din        ( { tlps_in.tuser[0], tlps_in.tlast, tlps_in.tkeepdw, tlps_in.tdata } ),
+        .din        ( { tlps_in.tuser[0], rx_end, tlps_in.tkeepdw, tlps_in.tdata } ),
         .wr_en      ( tlps_in.tvalid && rx_pass ),
         .rd_en      ( fifo_rd           ),
         .dout       ( fifo_dout         ),
         .full       ( fifo_full         ),
+        .prog_full  ( fifo_pfull        ),
         .empty      (                   ),
         .valid      ( fifo_valid        )
     );
@@ -336,6 +351,8 @@ module pcileech_tlps128_src_fifo (
     wire        acc_pcie;           // clk_pcie: read side may access the FIFOs
     wire        full_data;
     wire        full_tok;
+    wire        pfull_data;         // prog_full: fewer than CAP_DW/4 beats free
+    wire        pfull_tok;          // prog_full: fewer than 3 tokens free
 
     pcileech_tlps128_fifo_rst_window i_rst_window(
         .rst            ( rst_sys                   ),
@@ -350,26 +367,39 @@ module pcileech_tlps128_src_fifo (
     //       packet boundary is tracked from tx_last by host_mid. host_mid is
     //       not cleared by rst_sys: across a FIFO reset it still knows whether
     //       the next DW starts a packet. A packet is admitted at its first DW
-    //       only if the FIFOs are accessible and neither is full (data and
-    //       token FIFO leave reset independently); otherwise all its DWs are
-    //       dropped, up to and including tx_last. rst_sys inside a packet drops
-    //       the rest of it. After an FPGA-wide reset that cut a host packet,
-    //       at most the next packet is dropped (resync at tx_last).
-    //       Not covered (unchanged from before): a FIFO that fills up inside
-    //       an admitted packet (the PCIe side not draining) still loses beats
-    //       of that packet while its token is written.
+    //       only if the FIFOs are accessible and both prog_full flags are
+    //       low (full stays as a backstop); otherwise all its DWs are dropped,
+    //       up to and including tx_last. rst_sys inside a packet drops the
+    //       rest of it. After an FPGA-wide reset that cut a host packet, at
+    //       most the next packet is dropped (resync at tx_last).
+    //       Capacity: prog_full never under-reports (writes count at once,
+    //       reads only after crossing into clk_sys). Data threshold 763 of
+    //       1023: low means at least 1023 - 762 - 2 = 259 free beats, counting
+    //       the previous packet's 2 beats the flag may not show yet, while an
+    //       admitted packet writes at most 258 (CAP_DW = 1029 DW, the largest
+    //       legal TLP: 4 header + 1024 data + 1 digest DW). Token threshold 13
+    //       of 15: low means at least 15 - 12 - 2 = 1 free token. A longer
+    //       host packet is cut at CAP_DW (its DW 1029 is written as last) and
+    //       the rest dropped, so an admitted packet always fits whole.
+    localparam integer CAP_DW = 1029;
     bit         host_mid  = 0;      // next host DW continues a packet
     bit         tx_admit  = 0;      // current host packet is being written
-    wire        tx_pass   = host_mid ? tx_admit : (acc_sys && !full_data && !full_tok);
+    bit [10:0]  tx_dw     = 0;      // DWs of the current admitted packet written
+    wire        tx_pass   = host_mid ? tx_admit : (acc_sys && !full_data && !full_tok && !pfull_data && !pfull_tok);
     wire        tx_valid  = dfifo_tx_valid && tx_pass;
+    wire        tx_end    = dfifo_tx_last || (host_mid && tx_dw == CAP_DW - 1);
 
     always @ ( posedge clk_sys ) begin
         if ( dfifo_tx_valid )
             host_mid <= !dfifo_tx_last;
-        if ( rst_sys )
+        if ( rst_sys ) begin
             tx_admit <= 1'b0;
-        else if ( dfifo_tx_valid )
-            tx_admit <= tx_pass && !dfifo_tx_last;
+            tx_dw    <= 11'd0;
+        end
+        else if ( dfifo_tx_valid ) begin
+            tx_admit <= tx_pass && !tx_end;
+            tx_dw    <= (tx_pass && !tx_end) ? (host_mid ? tx_dw + 11'd1 : 11'd1) : 11'd0;
+        end
     end
 
     // 1: 32-bit -> 128-bit state machine:
@@ -386,7 +416,7 @@ module pcileech_tlps128_src_fifo (
             first   <= 1;
         end
         else begin
-            tlast   <= tx_valid && dfifo_tx_last;
+            tlast   <= tx_valid && tx_end;
             tkeepdw <= tvalid ? (tx_valid ? 4'b0001 : 4'b0000) : (tx_valid ? ((tkeepdw << 1) | 1'b1) : tkeepdw);
             first   <= tvalid ? tlast : first;
             if ( tx_valid ) begin
@@ -423,6 +453,7 @@ module pcileech_tlps128_src_fifo (
         .rd_en          ( acc_pcie                  ),
         .dout           (                           ),
         .full           ( full_tok                  ),
+        .prog_full      ( pfull_tok                 ),
         .empty          (                           ),
         .valid          ( tok_valid                 )
     );
@@ -442,6 +473,7 @@ module pcileech_tlps128_src_fifo (
         .rd_en          ( tlps_out.tready && (pkt_count_next > 0) && acc_pcie ),
         .dout           ( { tlps_out.tuser[0], tlps_out.tlast, tlps_out.tkeepdw, tlps_out.tdata } ),
         .full           ( full_data                 ),
+        .prog_full      ( pfull_data                ),
         .empty          (                           ),
         .valid          ( data_valid                )
     );

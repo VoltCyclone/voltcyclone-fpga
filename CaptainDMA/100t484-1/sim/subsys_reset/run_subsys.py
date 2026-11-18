@@ -38,7 +38,7 @@ SHD = "pcileech_tlps128_cfgspace_shadow.sv"
 TLP = "pcileech_pcie_tlp_a7.sv"
 FILTER_RST = ("filter  <= rst || (tlps_in.tvalid ? filter_next : filter);",
               "filter  <= (tlps_in.tvalid ? filter_next : filter);")
-DST_ADMIT = ("wire         rx_pass  = tlps_in.tuser[0] ? (acc_pcie && !fifo_full) : (rx_admit && acc_pcie && !fifo_full);",
+DST_ADMIT = ("wire         rx_pass  = tlps_in.tuser[0] ? (acc_pcie && !fifo_full && !fifo_pfull) : (rx_admit && acc_pcie && !fifo_full);",
              "wire         rx_pass  = acc_pcie && !fifo_full;")
 SEQ_OUT = (".fifo_rst           ( rst_subsys_fifo       ),", ".fifo_rst           ( ),")
 MUTANTS: dict[str, tuple[str, list[tuple[str, str]], int, str]] = {
