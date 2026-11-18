@@ -186,14 +186,14 @@ The host side models the LeechCore 2.23+ parser:
 Each run makes 12 aborts at random points, two thirds of them aimed off a word
 boundary. The PHY side pulls about one DW in three. Failures:
 
-| Marker | Failure |
-| --- | --- |
-| `COM_SESSION_SPLICE` | A completed TLP is not exactly one whole TLP. |
-| `COM_SESSION_MALFORMED` | The parser reports a malformed TLP. |
-| `COM_SESSION_MISFRAME` | A host frame starts off the COM word grid. |
-| `COM_SESSION_LOST` | A TLP that was not in flight at an abort is missing, repeated or out of order. |
-| `COM_SESSION_PAD` | An abort is not followed by the idle word before new data. |
-| `COM_SESSION_COVERAGE` | No mid-word cut, no dropped tail, no host restart at FIRST, or too little delivery. |
+|         Marker          |                                       Failure                                       |
+|-------------------------|-------------------------------------------------------------------------------------|
+| `COM_SESSION_SPLICE`    | A completed TLP is not exactly one whole TLP.                                       |
+| `COM_SESSION_MALFORMED` | The parser reports a malformed TLP.                                                 |
+| `COM_SESSION_MISFRAME`  | A host frame starts off the COM word grid.                                          |
+| `COM_SESSION_LOST`      | A TLP that was not in flight at an abort is missing, repeated or out of order.      |
+| `COM_SESSION_PAD`       | An abort is not followed by the idle word before new data.                          |
+| `COM_SESSION_COVERAGE`  | No mid-word cut, no dropped tail, no host restart at FIRST, or too little delivery. |
 
 One case is counted as `SESSION_RESIDUAL`, not failed: the one host frame that
 straddles a mid-word cut.
@@ -209,12 +209,12 @@ straddles a mid-word cut.
 The matrix (3 cases × 3 clock settings) must print
 `COM_VENDOR_RUN_PASS cases=9 mutant=None`. Mutants:
 
-| Mutant | Change |
-| --- | --- |
-| `resync_no_skip` | Tails are never dropped. |
-| `resync_no_rearm` | A flush does not re-arm the drop. |
-| `resync_no_pad` | No idle word. |
-| `resync_bypass` | Previous wiring: mux words go straight into the FIFO. |
+|      Mutant       |                        Change                         |
+|-------------------|-------------------------------------------------------|
+| `resync_no_skip`  | Tails are never dropped.                              |
+| `resync_no_rearm` | A flush does not re-arm the drop.                     |
+| `resync_no_pad`   | No idle word.                                         |
+| `resync_bypass`   | Previous wiring: mux words go straight into the FIFO. |
 
 Each mutant runs on case 0 at the three clock settings with `--matrix`, and
 must fail with a `COM_SESSION_` marker in every run.

@@ -4,15 +4,15 @@
 `pcileech_pcie_cfgword_cdc` and the four modules that own the seven
 clk_sys <-> clk_pcie FIFOs reset by the PCIe subsystem reset:
 
-| FIFO | Owner | Write / read clock |
-| --- | --- | --- |
-| `fifo_64_64` (cfg_tx) | `pcileech_pcie_cfg_a7` | clk_sys / clk_pcie |
-| `fifo_32_32_clk2` (cfg_rx) | `pcileech_pcie_cfg_a7` | clk_pcie / clk_sys |
-| `fifo_49_49_clk2` (shd_req) | `pcileech_tlps128_cfgspace_shadow` | clk_sys / clk_pcie |
-| `fifo_43_43_clk2` (shd_rsp) | `pcileech_tlps128_cfgspace_shadow` | clk_pcie / clk_sys |
-| `fifo_134_134_clk2` (dst) | `pcileech_tlps128_dst_fifo` | clk_pcie / clk_sys |
-| `fifo_134_134_clk2_rxfifo` (src_data) | `pcileech_tlps128_src_fifo` | clk_sys / clk_pcie |
-| `fifo_1_1_clk2` (src_tok) | `pcileech_tlps128_src_fifo` | clk_sys / clk_pcie |
+|                 FIFO                  |               Owner                | Write / read clock |
+|---------------------------------------|------------------------------------|--------------------|
+| `fifo_64_64` (cfg_tx)                 | `pcileech_pcie_cfg_a7`             | clk_sys / clk_pcie |
+| `fifo_32_32_clk2` (cfg_rx)            | `pcileech_pcie_cfg_a7`             | clk_pcie / clk_sys |
+| `fifo_49_49_clk2` (shd_req)           | `pcileech_tlps128_cfgspace_shadow` | clk_sys / clk_pcie |
+| `fifo_43_43_clk2` (shd_rsp)           | `pcileech_tlps128_cfgspace_shadow` | clk_pcie / clk_sys |
+| `fifo_134_134_clk2` (dst)             | `pcileech_tlps128_dst_fifo`        | clk_pcie / clk_sys |
+| `fifo_134_134_clk2_rxfifo` (src_data) | `pcileech_tlps128_src_fifo`        | clk_sys / clk_pcie |
+| `fifo_1_1_clk2` (src_tok)             | `pcileech_tlps128_src_fifo`        | clk_sys / clk_pcie |
 
 The FIFOs, the shadow BRAM/DROM and `fifo_129_129_clk1` are functional
 netlists exported from the project's out-of-context checkpoints

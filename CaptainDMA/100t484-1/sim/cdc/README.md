@@ -43,12 +43,12 @@ was re-checked after the FT601 follow-ups (RX hold, `tx_order_err` status
 bit): the only change was the new CDC-3 synchronizer, and the checker passes on
 both variants.
 
-| ID | Severity | Count | Disposition |
-| --- | --- | --- | --- |
-| CDC-11 | Critical | 13 | Accepted per endpoint (groups A-C below) |
-| CDC-15 | Warning | 206 | Accepted: FIFO Generator read register, one per connected output bit |
-| CDC-3 | Info | 43 | 1-bit synchronizers with `ASYNC_REG`. The 43rd (2026-11-18) is `g_ft601_phy.i_cdc_tx_order_err`, the status-only `tx_order_err` flag |
-| CDC-9 | Info | 7 | Async reset synchronizers with `ASYNC_REG` |
+|   ID   | Severity | Count |                                                             Disposition                                                              |
+|--------|----------|-------|--------------------------------------------------------------------------------------------------------------------------------------|
+| CDC-11 | Critical | 13    | Accepted per endpoint (groups A-C below)                                                                                             |
+| CDC-15 | Warning  | 206   | Accepted: FIFO Generator read register, one per connected output bit                                                                 |
+| CDC-3  | Info     | 43    | 1-bit synchronizers with `ASYNC_REG`. The 43rd (2026-11-18) is `g_ft601_phy.i_cdc_tx_order_err`, the status-only `tx_order_err` flag |
+| CDC-9  | Info     | 7     | Async reset synchronizers with `ASYNC_REG`                                                                                           |
 
 ## CDC-11: fan-out from a launch flop to one destination clock
 
@@ -74,10 +74,10 @@ access for far longer than that.
 Launch: `i_pcileech_com/g_fifo_replay.i_reset/fifo_rst_reg` (`net_clk`,
 `pcileech_com_fifo_reset`).
 
-| Endpoint (stage 0 PRE) | Synchronizer |
-| --- | --- |
-| COM TX FIFO `i_fifo_256_32_clk2_comtx`, read side | 2 stages |
-| COM RX FIFO `i_fifo_64_64_clk2_comrx`, write side | 2 stages |
+|              Endpoint (stage 0 PRE)               | Synchronizer |
+|---------------------------------------------------|--------------|
+| COM TX FIFO `i_fifo_256_32_clk2_comtx`, read side | 2 stages     |
+| COM RX FIFO `i_fifo_64_64_clk2_comrx`, write side | 2 stages     |
 
 - **When the copies release:** each FIFO's `c0` side leaves reset ≤ 3 `c0`
   edges after `fifo_rst` falls.
@@ -95,6 +95,7 @@ Launch: `i_pcileech_com/g_fifo_replay.i_reset/fifo_rst_reg` (`net_clk`,
   edges. CDC needs about 3. The COM FIFOs follow the project's six-period
   policy rather than PG057's 30-cycle no-access zone, which the PCIe windows
   use. That functional choice is covered by the vendor-model benches.
+
 - **Data check:** the vendor-model COM reset benches cover this with real FIFO
   Generator models, including mutants that drop the post-release hold
   (`no_post_hold`) and shorten the gap (`short_gap`). See
@@ -107,15 +108,15 @@ Launch: `i_pcileech_pcie_a7/i_pcileech_pcie_a7_rst/i_fifo_reset/fifo_rst_reg`
 (`net_clk`). This is `rst_subsys_fifo`, the `rst` pin of all seven
 `clk_sys`↔`clk_pcie` FIFOs.
 
-| FIFO | Side in `userclk1` | Window that gates it |
-| --- | --- | --- |
-| `cfg_a7` `i_fifo_pcie_cfg_rx` | write | `cfg_a7/i_rst_window` |
-| `cfg_a7` `i_fifo_pcie_cfg_tx` | read | `cfg_a7/i_rst_window` |
-| shadow `i_fifo_43_43_clk2` | write | `cfgspace_shadow/i_rst_window` |
-| shadow `i_fifo_49_49_clk2` | read | `cfgspace_shadow/i_rst_window` |
-| `dst_fifo` `i_fifo_134_134_clk2` | write | `dst_fifo/i_rst_window` |
-| `src_fifo` `i_fifo_134_134_clk2_rxfifo` (data) | read | `src_fifo/i_rst_window` |
-| `src_fifo` `i_fifo_1_1_clk2` (token) | read | `src_fifo/i_rst_window` (same as data) |
+|                      FIFO                      | Side in `userclk1` |          Window that gates it          |
+|------------------------------------------------|--------------------|----------------------------------------|
+| `cfg_a7` `i_fifo_pcie_cfg_rx`                  | write              | `cfg_a7/i_rst_window`                  |
+| `cfg_a7` `i_fifo_pcie_cfg_tx`                  | read               | `cfg_a7/i_rst_window`                  |
+| shadow `i_fifo_43_43_clk2`                     | write              | `cfgspace_shadow/i_rst_window`         |
+| shadow `i_fifo_49_49_clk2`                     | read               | `cfgspace_shadow/i_rst_window`         |
+| `dst_fifo` `i_fifo_134_134_clk2`               | write              | `dst_fifo/i_rst_window`                |
+| `src_fifo` `i_fifo_134_134_clk2_rxfifo` (data) | read               | `src_fifo/i_rst_window`                |
+| `src_fifo` `i_fifo_1_1_clk2` (token)           | read               | `src_fifo/i_rst_window` (same as data) |
 
 - **When the copies release:** each FIFO's `clk_pcie` side leaves reset ≤ 3
   `clk_pcie` edges after `rst_subsys_fifo` falls.
@@ -163,12 +164,12 @@ FIFO Generator reads a word only after its write has crossed through the
 gray-coded pointer synchronizers, so the RAM output is stable when captured.
 The IP's own constraints time these paths as `Max Delay Datapath Only`.
 
-| FIFO | Direction | Findings | Connected `dout` bits |
-| --- | --- | --- | --- |
-| `i_fifo_64_64_clk2_comrx` | `ft601_c0` → `net_clk` | 64 | 64 |
-| `cfg_a7` `i_fifo_pcie_cfg_tx` (`fifo_64_64`) | `net_clk` → `userclk1` | 50 | 50 of 64 |
-| shadow `i_fifo_43_43_clk2` | `userclk1` → `net_clk` | 43 | 43 |
-| shadow `i_fifo_49_49_clk2` | `net_clk` → `userclk1` | 49 | 49 |
+|                     FIFO                     |       Direction        | Findings | Connected `dout` bits |
+|----------------------------------------------|------------------------|----------|-----------------------|
+| `i_fifo_64_64_clk2_comrx`                    | `ft601_c0` → `net_clk` | 64       | 64                    |
+| `cfg_a7` `i_fifo_pcie_cfg_tx` (`fifo_64_64`) | `net_clk` → `userclk1` | 50       | 50 of 64              |
+| shadow `i_fifo_43_43_clk2`                   | `userclk1` → `net_clk` | 43       | 43                    |
+| shadow `i_fifo_49_49_clk2`                   | `net_clk` → `userclk1` | 49       | 49                    |
 
 The block-RAM FIFOs have no CDC-15 findings. The distributed-RAM token FIFO
 `i_fifo_1_1_clk2` has none either, because its `dout` has no load: only the
@@ -220,3 +221,4 @@ dropped. This is the documented drop at a FIFO reset.
 - The FIFO-internal synchronizer depth (2 stages) and its MTBF are the IP
   configuration's. They are unchanged here.
 - No bitstream and no hardware run.
+
