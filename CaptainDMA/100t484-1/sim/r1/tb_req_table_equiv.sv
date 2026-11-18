@@ -4,6 +4,9 @@
 // (XOR live-value table, sweep decisions from registered state, count stage). Legal random
 // admit/issue/release/progress/retire traffic, FLR, short completion timeout
 // (code 1) and retires aimed at the entry the sweep expires or drains.
+// The new table applies a retire to its state one edge later than the
+// reference: in the cycle after a retire that entry is not yet in its free
+// vector, and the allocator (which reads that vector) cannot offer it.
 module tb_req_table_equiv;
   reg clk=0, rst=1, flr=0; reg [3:0] code=4'd1; integer coll=0; always #5 clk=~clk;
   reg adm_valid=0, iss_valid=0, rel_valid=0, up_valid=0, up_retire=0;
@@ -25,6 +28,7 @@ module tb_req_table_equiv;
   // Count stage: the new counts are the reference's from one cycle earlier; the
   // published n_reserved adds an admission still in the count stage.
   reg [8:0] pnr=0, pni=0, pnq=0;
+  reg pret=0; reg [7:0] pret_tag=0; reg [255:0] f_want; integer pend=0;
   function automatic [7:0] pick(input [1:0] want);   // random tag in a state, else 8'hff marker
     integer j, o; pick=8'hff; o=$urandom;
     for (j=0;j<256;j++) if (A.st[(j+o)&255]==want) begin pick=(j+o)&255; return pick; end
@@ -35,13 +39,15 @@ module tb_req_table_equiv;
     for (n=0;n<400000;n++) begin
       @(negedge clk);
       adm_valid=0; iss_valid=0; rel_valid=0; up_valid=0; up_retire=0; flr=($urandom%5000)==0;
-      if ($urandom%3==0) begin adm_tag=pick(`REQ_ST_FREE); if(adm_tag!=8'hff) begin adm_valid=1; adm_host_tag=$urandom; adm_bc=$urandom; adm_la=$urandom; adm_tc=$urandom; adm_attr=$urandom; end end
+      if ($urandom%3==0) begin adm_tag=pick(`REQ_ST_FREE); if(adm_tag!=8'hff && !(pret && adm_tag==pret_tag)) begin adm_valid=1; adm_host_tag=$urandom; adm_bc=$urandom; adm_la=$urandom; adm_tc=$urandom; adm_attr=$urandom; end end
       if ($urandom%3==0) begin iss_tag=pick(`REQ_ST_RESERVED); if(iss_tag!=8'hff && !(adm_valid&&adm_tag==iss_tag)) iss_valid=1; end
       if ($urandom%11==0) begin rel_tag=pick(`REQ_ST_RESERVED); if(rel_tag!=8'hff && !(iss_valid&&iss_tag==rel_tag)) rel_valid=1; end
       if ($urandom%6==0) begin up_tag=pick($urandom%2 ? `REQ_ST_ISSUED : `REQ_ST_QUARANTINED); if(up_tag!=8'hff) begin up_valid=1; up_retire=($urandom%4==0); up_remaining=$urandom; up_next_la=$urandom; end end
       // Bias toward retiring the entry the sweep is visiting this cycle.
       #0.1;
-      if ((B.sw_expire_raw || B.sw_drain_raw) ? ($urandom%2==0) : ($urandom%64==0 && (A.st[A.sw_idx]==`REQ_ST_ISSUED || A.st[A.sw_idx]==`REQ_ST_QUARANTINED))) begin
+      // Only a live entry can be retired (the lookup reads a pending retire as FREE).
+      if ((A.st[A.sw_idx]==`REQ_ST_ISSUED || A.st[A.sw_idx]==`REQ_ST_QUARANTINED) &&
+          ((B.sw_expire_raw || B.sw_drain_raw) ? ($urandom%2==0) : ($urandom%64==0))) begin
         up_tag=A.sw_idx; up_valid=1; up_retire=1; up_remaining=0; up_next_la=$urandom;
       end
       lk_tag = ($urandom%2 && up_valid) ? up_tag : $urandom;
@@ -54,7 +60,15 @@ module tb_req_table_equiv;
         end
         cmp++;
       end
-      if ({f_a,tv_a,tt_a,eb_a,er_a} !== {f_b,tv_b,tt_b,eb_b,er_b}) begin $display("R1_TB_FAIL status mismatch n=%0d",n); $fatal(1); end
+      // The entry retired on the last edge may already be FREE (the sweep drained
+      // it on that edge) or not yet; every other entry matches, and the new
+      // table is never freer than the reference.
+      f_want = f_a;
+      if (pret) begin f_want[pret_tag] = f_b[pret_tag]; pend++; end
+      if ((f_b & ~f_a) != 0) begin $display("R1_TB_FAIL free ahead of the reference n=%0d", n); $fatal(1); end
+      if ({f_want,tv_a,tt_a,eb_a,er_a} !== {f_b,tv_b,tt_b,eb_b,er_b}) begin
+        $display("R1_TB_FAIL status mismatch n=%0d free_diff=%h to %0d/%0d tag %0d/%0d err %0d%0d/%0d%0d pret=%0d tag=%0d", n,
+                 f_want ^ f_b, tv_a, tv_b, tt_a, tt_b, eb_a, er_a, eb_b, er_b, pret, pret_tag); $fatal(1); end
       if (ni_b !== pni || nq_b !== pnq || nr_b !== pnr + {8'd0, B.e_adm} || tp_b !== (nr_b != 0 || ni_b != 0)) begin
         $display("R1_TB_FAIL count-stage mismatch n=%0d new r/i/q=%0d/%0d/%0d ref(prev) %0d/%0d/%0d e_adm=%0d", n, nr_b, ni_b, nq_b, pnr, pni, pnq, B.e_adm); $fatal(1);
       end
@@ -64,8 +78,9 @@ module tb_req_table_equiv;
       end
       if ({1'b0,nr_b} + {1'b0,ni_b} != {1'b0,nr_a} + {1'b0,ni_a}) cons++;
       pnr = nr_a; pni = ni_a; pnq = nq_a;
+      pret = up_valid && up_retire; pret_tag = up_tag;
       for (k=0;k<256;k++) if (A.st[k]!=`REQ_ST_FREE && A.lvt[k]!==(B.ga[k]^B.gu[k])) begin $display("R1_TB_FAIL live-value mismatch n=%0d tag=%0d",n,k); $fatal(1); end
     end
-    $display("R1_TB_PASS tb_req_table_equiv cycles=%0d live_lookups=%0d update_bank_lookups=%0d timeouts_seen=%0d swept_retires=%0d np_count_above_current=%0d", n, live, lvt1, tos, coll, cons); $finish;
+    $display("R1_TB_PASS tb_req_table_equiv cycles=%0d live_lookups=%0d update_bank_lookups=%0d timeouts_seen=%0d swept_retires=%0d np_count_above_current=%0d pending_retires=%0d", n, live, lvt1, tos, coll, cons, pend); $finish;
   end
 endmodule

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check tag-lifecycle faults in pcileech_req_table using temporary RTL copies
-and the real tb_req_table bench (R4: no unsafe tag reuse after a timeout).
+and the real tb_req_table bench (R4: no unsafe tag reuse after a timeout); a
+mutant may name another bench (tb_req_table_equiv, lockstep with the reference).
 
 Every mutant here would let a tag be handed out again while a completion for
 its previous use can still arrive (or would keep a tag out of use for ever).
@@ -38,6 +39,13 @@ MUTANTS = [
     ("FLR drain from issue", "fl[sw_idx] ? t_flr : tqr[sw_idx];", "tqr[sw_idx];"),
     # expiry before the timeout window
     ("expire at T/2", "(sw_age_iss >= sw_t) && !flr;", "(sw_age_iss >= (sw_t >> 1)) && !flr;"),
+    # registered retire (one edge late): a pending retire still reads live at the lookup
+    ("pending retire not forwarded", "(ret_q && ret_tag_q == lk_tag) ? `REQ_ST_FREE : st[lk_tag];",
+     "st[lk_tag];"),
+    # the sweep times out or drains an entry whose retire is still pending
+    # (spurious timeout event, double count); the lockstep bench observes it
+    ("sweep ignores pending retire", "                      (ret_q && (ret_tag_q == sw_idx));",
+     "                      1'b0;", "tb_req_table_equiv"),
 ]
 
 
@@ -59,11 +67,12 @@ def main() -> int:
         passed, log = run_r1.run_bench(bench, rtl, scratch_dir)
         if not passed:
             raise RuntimeError("table positive control failed\n" + log)
-        for label, before, after in MUTANTS:
+        for label, before, after, *alt in MUTANTS:
             if original.count(before) != 1:
                 raise RuntimeError("stale or ambiguous mutation anchor " + label)
             source.write_text(original.replace(before, after))
-            passed, log = run_r1.run_bench(bench, rtl, scratch_dir)
+            mbench = alt[0] if alt else bench
+            passed, log = run_r1.run_bench(mbench, run_r1.BENCHES[mbench], scratch_dir)
             if passed or "R1_TB_FAIL" not in log:
                 raise RuntimeError("mutation survived or failed to compile " + label + "\n" + log[-3000:])
             first = next((l for l in log.splitlines() if "FAIL" in l and "R1_TB_FAIL" not in l), "R1_TB_FAIL")

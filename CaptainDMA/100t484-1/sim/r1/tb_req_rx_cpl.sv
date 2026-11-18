@@ -69,6 +69,11 @@ module tb_req_rx_cpl;
     );
 
     int checks = 0;
+    // The table applies a retire to its state one edge after the completion
+    // (registered retire); free_eff counts that pending retire as freed.
+    // tb_req_table checks that the write lands on the next edge.
+    wire [255:0] free_eff = free | (entries.ret_q ? (256'd1 << entries.ret_tag_q) : 256'd0);
+
     task automatic check(input logic ok, input string message);
         checks++;
         if (ok !== 1'b1)
@@ -80,6 +85,10 @@ module tb_req_rx_cpl;
         input [6:0] la, input bit issue_it = 1
     );
         @(negedge clk);
+        // As the allocator: only a tag the table reports free is admitted (a
+        // retire reaches free[] one edge after its completion).
+        in_valid = 0;
+        while (!free[tag]) @(negedge clk);
         adm_valid = 1; adm_tag = tag; adm_host_tag = host_tag;
         adm_bc = bytes; adm_la = la; in_valid = 0;
         @(negedge clk);
@@ -118,7 +127,7 @@ module tb_req_rx_cpl;
         in_data = data; in_keep = keep; in_user = {7'h35, last, first};
         in_last = last; in_valid = 1;
         #1;
-        check(up_valid === update_entry, "one update per matching completion");
+        check(up_valid === update_entry, $sformatf("one update per matching completion (tag %h, want %0d, lk_state %0d)", data[79:72], update_entry, entries.lk_state));
         if (update_entry) begin
             check(up_tag === data[79:72] && up_retire === retire, "update uses internal tag and expected retirement");
             if (!retire)
@@ -186,7 +195,7 @@ module tb_req_rx_cpl;
         cpl(header(8'h12, 4, 0, 1), 4, 0, 0, 0, 0, 0, 0, 1); // FREE
         request(8'h12, 8'hac, 4, 0, 0);
         cpl(header(8'h12, 4, 0, 1), 4, 0, 0, 0, 0, 0, 0, 1); // RESERVED
-        check(n_reserved == 1 && !free[8'h12], "completion cannot retire RESERVED");
+        check(n_reserved == 1 && !free_eff[8'h12], "completion cannot retire RESERVED");
         // PG054 assigns invalid 4DW completion format checking to user logic.
         hdr = header(8'h12, 8, 0, 2, 8'h6a);
         send(hdr, 4'hf, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
@@ -196,12 +205,12 @@ module tb_req_rx_cpl;
         // EP on every fragment of one split read. LA wraps modulo 128.
         request(8'h13, 8'had, 133, 7'h7f);
         cpl(header(8'h13, 133, 7'h7f, 1, 8'h4a, 0, 0, 1), 4, 1, 8'had, 1, 0, 132, 0);
-        check(!free[8'h13], "poisoned first fragment retains tag");
+        check(!free_eff[8'h13], "poisoned first fragment retains tag");
         cpl(header(8'h13, 133, 7'h7f, 1), 4, 0, 0, 0, 0, 0, 0, 1); // duplicate
         cpl(header(8'h13, 132, 0, 32, 8'h4a, 0, 0, 1), 35, 1, 8'had, 1, 0, 4, 0);
-        check(!free[8'h13], "poisoned middle fragment retains tag");
+        check(!free_eff[8'h13], "poisoned middle fragment retains tag");
         cpl(header(8'h13, 4, 0, 1, 8'h4a, 0, 0, 1), 4, 1, 8'had, 1, 1);
-        check(free[8'h13], "poisoned final fragment retires tag");
+        check(free_eff[8'h13], "poisoned final fragment retires tag");
 
         request(8'h14, 8'hae, 4, 0);
         hdr = header(8'h14, 4, 0, 1);
@@ -219,10 +228,10 @@ module tb_req_rx_cpl;
         check(unexpected_count == 10 && mismatch_count == 8 && malformed_count == 2,
               "unowned and malformed completions have distinct counters");
         cpl(header(8'h14, 4, 0, 1, 8'h4a, 0, 0, 0, 1), 4, 0);
-        check(bcm_count == 1 && !free[8'h14], "BCM is counted without retiring or reporting");
+        check(bcm_count == 1 && !free_eff[8'h14], "BCM is counted without retiring or reporting");
         // TD on a one-DW read creates a digest-only beat after the packet body.
         cpl(header(8'h14, 4, 0, 1, 8'h4a, 0, 1), 5, 1, 8'hae, 1, 1);
-        check(free[8'h14], "untrimmed digest does not impede retirement");
+        check(free_eff[8'h14], "untrimmed digest does not impede retirement");
 
         request(8'h15, 8'hb5, 8, 0);
         cpl(header(8'h15, 8, 0, 2, 8'h4a, 0, 1), 6, 1, 8'hb5, 1, 1);
@@ -232,14 +241,14 @@ module tb_req_rx_cpl;
         cpl(header(8'h16, 1, 0, 1), 4, 1, 8'hb6, 1, 1);
         request(8'h17, 8'hb7, 4096, 0);
         cpl(header(8'h17, 0, 0, 0, 8'h4a, 0, 1), 1028, 1, 8'hb7, 1, 1);
-        check(free[8'h17], "encoded zero length and byte count support 4096 bytes");
+        check(free_eff[8'h17], "encoded zero length and byte count support 4096 bytes");
 
         // All non-SC statuses terminate a matching request. Length is undefined.
         for (int s = 1; s < 8; s++) begin
             request(8'h20, 8'hb8, 4, 0);
             cpl(header(8'h20, 4, 0, 10'h2ff, 8'h0a, 3'(s), 1),
                 4, s != 2, 8'hb8, 1, 1);
-            check(free[8'h20], "terminal completion retires independent of undefined Length");
+            check(free_eff[8'h20], "terminal completion retires independent of undefined Length");
         end
         check(crs_count == 1, "CRS is counted without PCIe error signaling");
         request(8'h21, 8'hb9, 4, 0);
@@ -247,7 +256,7 @@ module tb_req_rx_cpl;
         hdr = header(8'h21, 4, 0, 1, 8'h0a, 3'd4);
         hdr[22:20] = 3'd4;
         cpl(hdr, 3, 0, 0, 0, 0, 0, 0, 1);
-        check(!free[8'h21], "non-success CplD cannot retire");
+        check(!free_eff[8'h21], "non-success CplD cannot retire");
 
         // Same-edge host tag reuse suppresses old delivery while still retiring it.
         request(8'h22, 8'hc1, 4, 0);
@@ -256,7 +265,7 @@ module tb_req_rx_cpl;
         adm_valid = 1; adm_tag = 8'h23; adm_host_tag = 8'hc1; adm_bc = 4; adm_la = 0;
         cpl(header(8'h22, 4, 0, 1), 4, 0, 0, 1, 1);
         adm_valid = 0;
-        check(free[8'h22] && !free[8'h23] && superseded_count == 1,
+        check(free_eff[8'h22] && !free_eff[8'h23] && superseded_count == 1,
               "superseded completion retires without delivery");
 
         request(8'h24, 8'hc2, 8, 7'h7c);
@@ -266,7 +275,7 @@ module tb_req_rx_cpl;
         flr = 0;
         cpl(header(8'h24, 8, 7'h7c, 1), 4, 0, 0, 1, 0, 4, 0, 1);
         cpl(header(8'h24, 4, 0, 1), 4, 0, 0, 1, 1, 0, 0, 1);
-        check(free[8'h24], "late fragments progress and retire without host delivery");
+        check(free_eff[8'h24], "late fragments progress and retire without host delivery");
         request(8'h2a, 8'hca, 4, 0);
         @(negedge clk);
         in_valid = 0; flr = 1;
@@ -274,7 +283,7 @@ module tb_req_rx_cpl;
         flr = 0;
         cpl(header(8'h2a, 4, 0, 1, 8'h4a, 0, 0, 0, 1), 4, 0, 0, 0, 0, 0, 0, 1);
         cpl(header(8'h2a, 4, 0, 1, 8'h0a, 3'd2), 3, 0, 0, 1, 1, 0, 0, 1);
-        check(free[8'h2a], "quarantined CRS retires and remains unexpected");
+        check(free_eff[8'h2a], "quarantined CRS retires and remains unexpected");
 
         request(8'h25, 8'hc5, 8, 7'h7c);
         request(8'h28, 8'hc8, 4, 0);
@@ -285,7 +294,7 @@ module tb_req_rx_cpl;
         flr = 0;
         cpl(header(8'h25, 4, 0, 1), 4, 0, 0, 1, 1, 0, 0, 1);
         cpl(header(8'h28, 4, 0, 1), 4, 0, 0, 1, 1, 0, 0, 1);
-        check(free[8'h25] && free[8'h28], "partial on FLR edge progresses in quarantine");
+        check(free_eff[8'h25] && free_eff[8'h28], "partial on FLR edge progresses in quarantine");
 
         request(8'h29, 8'hc9, 4, 0);
         @(posedge clk);
@@ -293,7 +302,7 @@ module tb_req_rx_cpl;
         flr = 1;
         cpl(header(8'h29, 4, 0, 1), 4, 1, 8'hc9, 1, 1);
         flr = 0;
-        check(free[8'h29], "terminal completion wins on FLR edge");
+        check(free_eff[8'h29], "terminal completion wins on FLR edge");
 
         // At the expiry edge the final completion wins. The cycle counter is
         // advanced until this tag's first due sweep, without asserting RX early.
@@ -307,11 +316,11 @@ module tb_req_rx_cpl;
         check(up_valid && up_retire && !unexpected_valid, "final completion is accepted on the due sweep");
         @(posedge clk);
         #1;
-        check(free[8'h26] && !to_valid && out_valid && out_data[79:72] == 8'hc3,
+        check(free_eff[8'h26] && !to_valid && out_valid && out_data[79:72] == 8'hc3,
               "final completion wins over same-edge timeout");
         check(completed_count == 16 && unexpected_count == 19 && mismatch_count == 10 &&
               bcm_count == 2 && crs_count == 2 && superseded_count == 1 && malformed_count == 2,
-              "completion telemetry counts active retirement, late traffic and each drop reason");
+              $sformatf("completion telemetry counts active retirement, late traffic and each drop reason (%0d %0d %0d %0d %0d %0d %0d)", completed_count, unexpected_count, mismatch_count, bcm_count, crs_count, superseded_count, malformed_count));
 
         // Reset must discard a continuation and resume at the next first beat.
         hdr = 128'h01020304_11223344_55667788_40000002;

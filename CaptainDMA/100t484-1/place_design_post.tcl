@@ -21,3 +21,23 @@ if {[llength $comtx_ptr_nets] == 0} {
     puts "INFO: place_design_post: replicating [llength $comtx_ptr_nets] COM TX FIFO pointer/reset nets"
     phys_opt_design -force_replication_on_nets $comtx_ptr_nets
 }
+
+# Global SYS reset: the top-level rst register (pcileech_100t484_x1_top.sv,
+# MAX_FANOUT 50). Synthesis counts each out-of-context FIFO IP as one load, so
+# after linking one copy can still drive ~300 FIFO-internal reset pins across
+# the die (sweep seeds17, ExtraTimingOpt: net_clk +0.048 ns, rst_reg ->
+# i_fifo_cmd_tx, 8.7 ns of routing). Every copy is a clk-domain register with
+# the same D, so replicas hold the same value.
+set sys_rst_regs [get_cells -quiet -filter {
+    PRIMITIVE_TYPE =~ FLOP_LATCH.*.* && (NAME == "rst_reg" || NAME =~ "rst_reg_rep*")}]
+if {[llength $sys_rst_regs] == 0} {
+    error "place_design_post: top-level rst register not found; update the cell pattern"
+}
+# Only the copies that still drive 100 or more pins (the synthesis replicas
+# carry about 50 each).
+set sys_rst_nets [get_nets -quiet -of_objects [get_pins -of_objects $sys_rst_regs \
+    -filter {REF_PIN_NAME == Q}] -filter {FLAT_PIN_COUNT >= 100}]
+if {[llength $sys_rst_nets] > 0} {
+    puts "INFO: place_design_post: replicating [llength $sys_rst_nets] top-level rst nets: $sys_rst_nets"
+    phys_opt_design -force_replication_on_nets $sys_rst_nets
+}

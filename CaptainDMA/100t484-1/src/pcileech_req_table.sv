@@ -115,10 +115,26 @@ module pcileech_req_table #(
         assign free[g] = (st[g] == `REQ_ST_FREE);
     end endgenerate
 
+    // ---- retire: registered, applied one cycle later -------------------------------------------
+    // The retire decision ends the completion lookup path (lookup, progress check, retire).
+    // Writing st[] from it in the same cycle put that path in front of every entry's state
+    // enable (the worst userclk1 path). The retire is registered here and applied on the
+    // next edge, after every other writer, so it wins as before. While it is pending the
+    // entry reads FREE at the lookup port, the sweep treats it as retired, and the
+    // allocator sees it FREE one cycle later (conservative).
+    reg         ret_q;
+    reg  [7:0]  ret_tag_q;
+    always @(posedge clk)
+        if (rst) begin
+            ret_q <= 1'b0; ret_tag_q <= 8'd0;
+        end else begin
+            ret_q <= up_valid && up_retire; ret_tag_q <= up_tag;
+        end
+
     wire [12:0] lk_meta = meta[lk_tag];
     wire        lk_lvt  = ga[lk_tag] ^ gu[lk_tag];
     wire [19:0] lk_rem  = lk_lvt ? rem_u[lk_tag] : rem_a[lk_tag];
-    assign lk_state      = st[lk_tag];
+    assign lk_state      = (ret_q && ret_tag_q == lk_tag) ? `REQ_ST_FREE : st[lk_tag];
     assign lk_host_tag   = lk_meta[12:5];
     assign lk_remaining  = lk_rem[19:7];
     assign lk_next_la    = lk_rem[6:0];
@@ -150,11 +166,13 @@ module pcileech_req_table #(
         .code(sw_iss[4:1]), .disable_lat(sw_iss[0]), .t_ticks(sw_t), .q_ticks(sw_q));
 
     // Sweep decisions use registered state only, so the completion lookup and
-    // progress check stay off the per-entry state path. A same-cycle retire of
-    // the swept entry wins: the state update applies it after the sweep, the
+    // progress check stay off the per-entry state path. A retire of the swept
+    // entry wins, whether it arrives in this cycle or is the registered retire
+    // still pending (ret_q): the state update applies it after the sweep, the
     // timeout event uses the retire-qualified form, and the count stage applies
-    // the same suppression from registered events.
-    wire sw_retired = up_valid && up_retire && (up_tag == sw_idx);
+    // the same suppression from the registered sw_retired.
+    wire sw_retired = (up_valid && up_retire && (up_tag == sw_idx)) ||
+                      (ret_q && (ret_tag_q == sw_idx));
     wire sw_expire_raw = (st[sw_idx] == `REQ_ST_ISSUED) && !sw_iss[0] && !ctl_disable &&
                          (sw_age_iss >= sw_t) && !flr;   // FLR quarantines silently
     wire sw_drain_raw  = (st[sw_idx] == `REQ_ST_QUARANTINED) && (sw_age_q >= sw_q);
@@ -207,8 +225,9 @@ module pcileech_req_table #(
         end else begin
             sw_idx <= sw_idx + 8'd1;
 
-            // FLR first: the per-port updates below act on other entries, except a
-            // same-cycle retire, which must win (its completion beat the FLR).
+            // FLR first: the per-port updates below act on other entries, except the
+            // registered retire, which is written last and wins (its completion beat
+            // the FLR).
             if (flr) begin
                 t_flr <= now;
                 for (i = 0; i < 256; i = i + 1) begin
@@ -243,8 +262,8 @@ module pcileech_req_table #(
             to_valid <= sw_expire;
             if (sw_expire) to_tag <= sw_idx;
 
-            // After the sweep: a same-cycle retire of the swept entry wins.
-            if (up_valid && up_retire) st[up_tag] <= `REQ_ST_FREE;
+            // Last: the registered retire wins over the sweep and an FLR.
+            if (ret_q) st[ret_tag_q] <= `REQ_ST_FREE;
         end
     end
 
@@ -264,21 +283,21 @@ module pcileech_req_table #(
     // Count stage: the events are registered (e_*) and counted in the next cycle. The
     // retire decision comes from the completion lookup and the byte-count check in the
     // same cycle; counting it there, together with the sweep's same-entry suppression,
-    // was the worst userclk1 path (lookup -> retire -> sweep -> count adder). The
+    // was the worst userclk1 path (lookup -> retire -> sweep -> count adder). Events are
+    // taken from the completion cycle (old_up = st[up_tag]), not from ret_q. The
     // registered counts therefore describe the state one cycle earlier. Admission is the
     // only event that raises n_reserved + n_issued, so the published n_reserved adds an
     // admission still in the count stage: the gate's NP-cap check and trn_pending see
     // the current count or a higher one, never a lower one.
     wire [1:0] old_up  = st[up_tag];
     wire       iss_ok  = iss_valid && (st[iss_tag] == `REQ_ST_RESERVED);
-    reg        e_adm, e_iss, e_iss_q, e_rel, e_ret, e_exp, e_drn, e_flr;
+    reg        e_adm, e_iss, e_iss_q, e_rel, e_ret, e_exp, e_drn, e_flr, e_sw_retired;
     reg  [1:0] e_old_up;
-    reg  [7:0] e_up_tag, e_sw_idx;
     always @(posedge clk)
         if (rst) begin
             e_adm <= 1'b0; e_iss <= 1'b0; e_iss_q <= 1'b0; e_rel <= 1'b0;
             e_ret <= 1'b0; e_exp <= 1'b0; e_drn <= 1'b0; e_flr <= 1'b0;
-            e_old_up <= 2'd0; e_up_tag <= 8'd0; e_sw_idx <= 8'd0;
+            e_old_up <= 2'd0; e_sw_retired <= 1'b0;
         end else begin
             e_adm    <= adm_valid;
             e_iss    <= iss_ok;
@@ -286,13 +305,11 @@ module pcileech_req_table #(
             e_rel    <= rel_valid && (st[rel_tag] == `REQ_ST_RESERVED);
             e_ret    <= up_valid && up_retire;
             e_old_up <= old_up;
-            e_up_tag <= up_tag;
             e_exp    <= sw_expire_raw;
             e_drn    <= sw_drain_raw;
-            e_sw_idx <= sw_idx;
+            e_sw_retired <= sw_retired;
             e_flr    <= flr;
         end
-    wire       e_sw_retired = e_ret && (e_up_tag == e_sw_idx);
     wire       e_expire = e_exp && !e_sw_retired;
     wire       e_drain  = e_drn && !e_sw_retired;
     reg  [9:0] d_res, d_iss, d_q, d_live;       // two's complement deltas

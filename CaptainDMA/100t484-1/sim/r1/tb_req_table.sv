@@ -57,7 +57,8 @@ module tb_req_table;
 
     // Invariant, every cycle: the registered counts equal the table state one cycle
     // earlier (count stage), and the published n_reserved adds an admission still in
-    // the count stage (dut.e_adm).
+    // the count stage (dut.e_adm). A registered retire not yet applied to st counts as
+    // FREE.
     integer inv_errors = 0;
     reg [8:0] pc_res, pc_iss, pc_q;
     reg [8:0] pv_res = 0, pv_iss = 0, pv_q = 0;
@@ -70,7 +71,7 @@ module tb_req_table;
             inv_errors = inv_errors + 1;
         end
         pc_res = 0; pc_iss = 0; pc_q = 0;
-        for (int k = 0; k < 256; k++) begin
+        for (int k = 0; k < 256; k++) if (!(dut.ret_q && dut.ret_tag_q == k)) begin
             pc_res += (dut.st[k] == `REQ_ST_RESERVED);
             pc_iss += (dut.st[k] == `REQ_ST_ISSUED);
             pc_q   += (dut.st[k] == `REQ_ST_QUARANTINED);
@@ -91,6 +92,13 @@ module tb_req_table;
         begin
             lk_tag = tag; #1;
             checks = checks + 1;
+            // A retire reaches the state one edge after the update (registered
+            // retire); the lookup port already reads FREE, the free vector
+            // follows on the next edge.
+            if (lk_state === st && st == `REQ_ST_FREE && free[tag] !== 1'b1 &&
+                dut.ret_q && dut.ret_tag_q == tag) begin
+                @(posedge clk); #1;
+            end
             if (lk_state !== st || free[tag] !== (st == `REQ_ST_FREE)) begin
                 errors = errors + 1;
                 $display("R1_TB_FAIL %0s: tag %0d state=%0d free=%b want %0d", name, tag, lk_state, free[tag], st);
