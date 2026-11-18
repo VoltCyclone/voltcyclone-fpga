@@ -5,11 +5,11 @@ Checks that `pcileech_tlps128_src_fifo` (host TX) and
 fill. Both modules admit a packet only at its first beat, and only when the
 FIFO's `prog_full` is low; the threshold leaves room for the largest legal TLP.
 
-| FIFO | Depth | `prog_full` threshold | Reserved |
-| --- | --- | --- | --- |
-| `fifo_134_134_clk2_rxfifo`: TX data, despite the IP name | 1023 | 763 | 258 beats + 2 in flight |
-| `fifo_1_1_clk2`: TX tokens | 15 | 13 | 1 token + 2 in flight |
-| `fifo_134_134_clk2`: RX data | 2047 | 1787 | 258 beats + 2 in flight |
+|                           FIFO                           | Depth | `prog_full` threshold |        Reserved         |
+|----------------------------------------------------------|-------|-----------------------|-------------------------|
+| `fifo_134_134_clk2_rxfifo`: TX data, despite the IP name | 1023  | 763                   | 258 beats + 2 in flight |
+| `fifo_1_1_clk2`: TX tokens                               | 15    | 13                    | 1 token + 2 in flight   |
+| `fifo_134_134_clk2`: RX data                             | 2047  | 1787                  | 258 beats + 2 in flight |
 
 258 beats is 1029 DW: a 4 DW header, 1024 DW of data and a 1 DW digest. The
 writers cap every admitted packet at that size. TX writes DW 1029 of a longer
@@ -71,10 +71,11 @@ beats (RX) and 6 (TX) without an overflow.
 The matrix is 3 cases × 3 `clk_pcie` periods (16, 8, 12 ns; `clk_sys` 10 ns)
 × 2 seeds = 18 runs. Mutants, each killed by one of those runs:
 
-| Mutant | Change | Caught by |
-| --- | --- | --- |
-| `tx_admit_on_full` | TX admits on `full` only | case 0 |
-| `tx_token_unreserved` | TX ignores token `prog_full` | case 1 |
-| `tx_no_cap` | TX does not cap at 1029 DW | case 2 |
-| `rx_admit_on_full` | RX admits on `full` only | case 0 |
-| `rx_no_cap` | RX does not cap at 258 beats | case 2 |
+|        Mutant         |            Change            | Caught by |
+|-----------------------|------------------------------|-----------|
+| `tx_admit_on_full`    | TX admits on `full` only     | case 0    |
+| `tx_token_unreserved` | TX ignores token `prog_full` | case 1    |
+| `tx_no_cap`           | TX does not cap at 1029 DW   | case 2    |
+| `rx_admit_on_full`    | RX admits on `full` only     | case 0    |
+| `rx_no_cap`           | RX does not cap at 258 beats | case 2    |
+
