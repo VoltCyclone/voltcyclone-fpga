@@ -22,14 +22,17 @@ interface IfComToFifo;
     wire [255:0]    com_din;
     wire            com_din_wr_en;
     wire            com_din_ready;
+    // COM status, clk domain. [0]: the FT601 accepted a TX word after a
+    // refusal since the FPGA reset (pcileech_ft601_phy tx_order_err, sticky).
+    wire [7:0]      com_status;
 
     modport mp_com (
-        output com_dout, com_dout_valid, com_din_ready,
+        output com_dout, com_dout_valid, com_din_ready, com_status,
         input com_din, com_din_wr_en
     );
 
     modport mp_fifo (
-        input com_dout, com_dout_valid, com_din_ready,
+        input com_dout, com_dout_valid, com_din_ready, com_status,
         output com_din, com_din_wr_en
     );
 endinterface

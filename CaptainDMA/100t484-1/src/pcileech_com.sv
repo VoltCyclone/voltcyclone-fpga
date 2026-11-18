@@ -287,6 +287,11 @@ module pcileech_com #(
         .valid          ( com_rx_valid              )
     );
     
+    wire com_tx_order_err_seen;
+`ifndef ENABLE_FT601
+    assign com_tx_order_err_seen = 1'b0;
+`endif
+    assign dfifo.com_status = {7'b0, com_tx_order_err_seen};
     assign dfifo.com_dout = initial_rx_valid ? initial_rx_data : com_rx_dout;
     assign dfifo.com_dout_valid = initial_rx_valid | (com_rx_valid && fifo_run_sys);
     
@@ -371,6 +376,28 @@ module pcileech_com #(
                 rx_ready <= 1'b1;
         wire rst_phy = rst_com || !rx_ready;
 
+        // TXE_N assumption check (see pcileech_ft601_phy). Status only: the
+        // flag sets a sticky clk-domain bit read by the host (+022 bit 2),
+        // and changes nothing in the data path.
+        wire tx_order_err, tx_order_err_clk;
+        xpm_cdc_single #(
+            .DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .SRC_INPUT_REG(0)
+        ) i_cdc_tx_order_err (
+            .src_clk(clk_c), .src_in(tx_order_err),
+            .dest_clk(clk), .dest_out(tx_order_err_clk)
+        );
+        // The PHY clears its flag only once rst_com reaches c0, and the
+        // synchronizer adds 4 clk cycles more; com_arst stays high far
+        // longer, so ignoring the flag under com_arst keeps a cleared bit
+        // from re-latching the previous session's flag.
+        reg tx_order_err_seen = 1'b0;
+        always @ ( posedge clk )
+            if ( rst )
+                tx_order_err_seen <= 1'b0;
+            else if ( tx_order_err_clk && !com_arst )
+                tx_order_err_seen <= 1'b1;
+        assign com_tx_order_err_seen = tx_order_err_seen;
+
         pcileech_ft601_phy i_pcileech_ft601_phy(
             // SYS
             .c0                 ( clk_c                 ),
@@ -392,10 +419,11 @@ module pcileech_com #(
             .din                ( core_din              ),  // <- [31:0]
             .din_wr_en          ( core_din_wr_en        ),  // <-
             .din_req_data       ( core_din_ready        ),  // ->
-            .tx_order_err       (                       )
+            .tx_order_err       ( tx_order_err          )
         );
     end
     else begin : g_ft601_legacy
+        assign com_tx_order_err_seen = 1'b0;
         pcileech_ft601 i_pcileech_ft601(
             // SYS
             .clk                ( clk_c                 ),

@@ -14,7 +14,7 @@ also fails in these cases:
 - a CDC-11 synchronizer has a stage count other than 2 (groups A and B) or 4
   (group C), or a stage without `ASYNC_REG`;
 - a CDC-15 finding's start or end is outside its own FIFO;
-- the Info counts are not exactly CDC-3 = 42 and CDC-9 = 7, or another Info
+- the Info counts are not exactly CDC-3 = 43 and CDC-9 = 7, or another Info
   ID appears;
 - there is any waiver other than FIFO Generator's own CDC-1 waivers on the
   listed distributed-RAM FIFOs. Three are present: COM RX, and the shadow 43
@@ -38,13 +38,16 @@ even when the checker passes:
   `pcileech_tlps128_cfgspace_shadow.sv` and `pcileech_pcie_tlp_a7.sv`.
 
 The disposition was made on board `55e1f8a` (same RTL as `207e610`), on the
-routed checkpoints of the `Default` and `ExtraTimingOpt` placer variants.
+routed checkpoints of the `Default` and `ExtraTimingOpt` placer variants. It
+was re-checked after the FT601 follow-ups (RX hold, `tx_order_err` status
+bit): the only change was the new CDC-3 synchronizer, and the checker passes on
+both variants.
 
 | ID | Severity | Count | Disposition |
 | --- | --- | --- | --- |
 | CDC-11 | Critical | 13 | Accepted per endpoint (groups A-C below) |
 | CDC-15 | Warning | 206 | Accepted: FIFO Generator read register, one per connected output bit |
-| CDC-3 | Info | 42 | 1-bit synchronizers with `ASYNC_REG` |
+| CDC-3 | Info | 43 | 1-bit synchronizers with `ASYNC_REG`. The 43rd (2026-11-18) is `g_ft601_phy.i_cdc_tx_order_err`, the status-only `tx_order_err` flag |
 | CDC-9 | Info | 7 | Async reset synchronizers with `ASYNC_REG` |
 
 ## CDC-11: fan-out from a launch flop to one destination clock

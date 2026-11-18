@@ -4,6 +4,9 @@
 //   0 basic: one RX burst, then TX
 //   1 mixed: random RX bursts and continuous TX with TXE_N full periods
 //   2 single words: isolated one-word RX and TX transfers
+//   4 holdover: the FT601 clock stops in an RX burst while c0/c180 keep
+//     running; arst follows +LOSS_NS later (phy_not_ready latency). No word
+//     the FT601 did not transfer may be delivered; then recovery as in 3.
 //   3 reset: arst mid-traffic with clocks stopped; pads release at once,
 //     then traffic resumes after reset and is checked exactly
 // Pass prints FT601_TB_PASS; any failure prints FT601_TB_FAIL.
@@ -29,11 +32,13 @@ module tb_ft601_phy;
     integer scen = 0;
     integer errors = 0;
 
-    // Clocks.
-    reg run = 1'b1;
-    reg e = 1'b0, c0 = 1'b0, c180 = 1'b0;
-    always begin #5.0; if ( run ) e = ~e; end
-    always @ ( e ) begin c0 <= #0.5 e; c180 <= #5.5 e; end
+    // Clocks. e is the FT601 clock. k drives c0/c180: it follows e, and with
+    // hold_run it keeps toggling after e stops (MMCM holdover: the outputs of
+    // a real MMCM are undocumented after input loss and may keep running).
+    reg run = 1'b1, hold_run = 1'b0;
+    reg e = 1'b0, k = 1'b0, c0 = 1'b0, c180 = 1'b0;
+    always begin #5.0; if ( run ) e = ~e; if ( run || hold_run ) k = ~k; end
+    always @ ( k ) begin c0 <= #0.5 k; c180 <= #5.5 k; end
 
     // Resets: arst models phy_not_ready; rst models rst_com (synchronized).
     reg  arst = 1'b1;
@@ -110,9 +115,12 @@ module tb_ft601_phy;
     end
 
     // RX sink: words pushed into the model are 32'hB000_0000 + n on the bus.
+    // A word counts as delivered where the COM RX FIFO would write it: at a
+    // c0 edge with rst_com low (the FIFO write enable is cleared
+    // asynchronously with rst_com; production adds one packing stage more).
     integer rx_pushed = 0, rx_got = 0, rx_base = 0;
     always @ ( posedge c0 )
-        if ( dout_valid ) begin
+        if ( dout_valid && !rst ) begin
             if ( dout !== bswap(32'hB000_0000 + rx_base + rx_got) ) begin
                 errors = errors + 1;
                 $display("FT601_TB_ERR rx word %0d got %h want %h at %0t",
@@ -120,6 +128,16 @@ module tb_ft601_phy;
             end
             rx_got = rx_got + 1;
         end
+
+    // PHY contract: no RX word on the edge after one that saw rst.
+    reg rst_q = 1'b1;
+    always @ ( posedge c0 ) begin
+        if ( rst_q && dout_valid ) begin
+            errors = errors + 1;
+            $display("FT601_TB_ERR dout_valid under rst at %0t", $realtime);
+        end
+        rst_q <= rst;
+    end
 
     always @ ( posedge c0 )
         if ( tx_order_err ) begin
@@ -216,7 +234,7 @@ module tb_ft601_phy;
         end
     endtask
 
-    integer it, n;
+    integer it, n, loss_ns;
     initial begin
         if ( !$value$plusargs("SCEN=%d", scen) ) scen = 0;
         if ( $value$plusargs("SEED=%d", n) ) n = $urandom(n);
@@ -245,6 +263,45 @@ module tb_ft601_phy;
                     tx_avail = tx_avail + 1;
                     repeat ( 40 ) @( posedge e );
                 end
+                quiesce();
+            end
+            4: begin
+                // phy_not_ready latency after the last FT601 edge: MMCM stop
+                // detection (the model's CLKINSTOPPED: 3 missing periods, up
+                // to 40 ns) + 3 clk synchronizer edges and the FSM register
+                // (up to 40 ns) = 80 ns by default.
+                if ( !$value$plusargs("LOSS_NS=%d", loss_ns) ) loss_ns = 80;
+                push_rx(300); m.open_rx(300);
+                tx_avail = 300;
+                repeat ( 30 + ($urandom % 40) ) @( posedge e );
+                hold_run = 1'b1;
+                #2.3;
+                run = 1'b0;             // FT601 clock stops, c0/c180 run on
+                #(loss_ns - 2.3);
+                arst = 1'b1;            // phy_not_ready
+                #(200);
+                hold_run = 1'b0;        // MMCM reset by the controller
+                #100;
+                k = e;                  // the relock restores the c0 phase
+                if ( rx_got > m.rx_xfers ) begin
+                    errors = errors + 1;
+                    $display("FT601_TB_ERR delivered %0d words, FT601 transferred %0d", rx_got, m.rx_xfers);
+                end
+                $display("FT601_TB_INFO holdover loss_ns=%0d delivered=%0d transferred=%0d", loss_ns, rx_got, m.rx_xfers);
+                model_rst = 1'b1;
+                run = 1'b1;
+                repeat ( 10 ) @( posedge e );
+                rx_base   = rx_base + rx_pushed + 1000;
+                rx_pushed = 0; rx_got = 0;
+                m.rx_xfers = 0;
+                tx_log_base = m.tx_n;
+                tx_base   = tx_sent;
+                tx_avail  = tx_sent;
+                release_reset();
+                tx_log_base = m.tx_n;
+                push_rx(120); m.open_rx(120);
+                tx_avail = tx_avail + 150;
+                repeat ( 600 ) @( posedge e );
                 quiesce();
             end
             3: begin

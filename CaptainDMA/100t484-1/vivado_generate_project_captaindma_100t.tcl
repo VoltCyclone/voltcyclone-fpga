@@ -676,13 +676,32 @@ set file "src/pcileech_100t484_x1_captaindma_100t.xdc"
 set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
 set_property -name "file_type" -value "XDC" -objects $file_obj
 
-# FT601 MMCM clock constraints, for the default FT601_PHY_MMCM = 1. A legacy
-# build (top generic FT601_PHY_MMCM=0) must remove this file from constrs_1.
+# FT601 MMCM clock constraints, only for the MMCM PHY (top generic
+# FT601_PHY_MMCM, default 1): they name cells a legacy build (FT601_PHY_MMCM=0)
+# lacks. The file is always imported; ::pcileech_board::sync_ft601_xdc enables
+# it from the final generic. It runs at the end of this script, and a flow that
+# sets generics later (such as the generator's requester plan) calls it again.
 set file "[file normalize ${origin_dir}/src/pcileech_ft601_mmcm.xdc]"
 set file_imported [import_files -fileset constrs_1 [list $file]]
 set file "src/pcileech_ft601_mmcm.xdc"
 set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
 set_property -name "file_type" -value "XDC" -objects $file_obj
+
+namespace eval ::pcileech_board {}
+proc ::pcileech_board::sync_ft601_xdc {} {
+  set mmcm 1
+  foreach g [get_property generic [get_filesets sources_1]] {
+    if {[regexp {^FT601_PHY_MMCM=(?:[0-9]*'[sS]?[bdhBDH])?([0-9a-fA-F]+)$} $g -> v]} {
+      set mmcm [expr {[string trimleft $v 0] ne ""}]
+    } elseif {[string match FT601_PHY_MMCM=* $g]} {
+      error "FT601_PHY_MMCM generic '$g' not understood; use FT601_PHY_MMCM=0 or 1"
+    }
+  }
+  set xdc [get_files -of_objects [get_filesets constrs_1] *pcileech_ft601_mmcm.xdc]
+  if {[llength $xdc] != 1} { error "expected one pcileech_ft601_mmcm.xdc in constrs_1, got '$xdc'" }
+  set_property IS_ENABLED $mmcm $xdc
+  puts "INFO: FT601_PHY_MMCM=$mmcm: pcileech_ft601_mmcm.xdc [expr {$mmcm ? {enabled} : {disabled (legacy FT601 PHY)}}]."
+}
 
 # Set 'constrs_1' fileset properties
 set obj [get_filesets constrs_1]
@@ -1002,7 +1021,7 @@ set_property -name "part" -value "xc7a100tfgg484-1" -objects $obj
 set_property -name "strategy" -value "Vivado Implementation Defaults" -objects $obj
 set_property -name "steps.phys_opt_design.is_enabled" -value "1" -objects $obj
 set_property -name "steps.opt_design.args.directive" -value "ExploreWithRemap" -objects $obj
-set_property -name "steps.opt_design.args.more_options" -value "-debug_log" -objects $obj
+set_property -name {steps.opt_design.args.more options} -value "-debug_log" -objects $obj
 set_property -name "steps.opt_design.tcl.post" -value "[file normalize "$origin_dir/opt_design_post.tcl"]" -objects $obj
 set_property -name "steps.place_design.tcl.post" -value "[file normalize "$origin_dir/place_design_post.tcl"]" -objects $obj
 set_property -name "steps.write_bitstream.args.bin_file" -value "1" -objects $obj
@@ -1063,3 +1082,6 @@ move_dashboard_gadget -name {drc_1} -row 2 -col 0
 move_dashboard_gadget -name {timing_1} -row 0 -col 1
 move_dashboard_gadget -name {utilization_2} -row 1 -col 1
 move_dashboard_gadget -name {methodology_1} -row 2 -col 1
+
+# FT601 MMCM constraints follow the final FT601_PHY_MMCM generic.
+::pcileech_board::sync_ft601_xdc

@@ -35,6 +35,23 @@
 // inactive, also with c180 stopped. Release is synchronous to c180. rst is
 // the c0-domain reset (rst_com) and covers the same condition.
 //
+// Clock loss. After the FT601 clock stops, the MMCM's c0/c180 may keep running
+// (the output behaviour without an input clock is undocumented). The pins are
+// then frozen: a read burst leaves RXF_N low and the next word on DATA, so
+// every such c0 edge would look like a new read word. phy_not_ready follows
+// the loss only after MMCM stop detection plus the clk-domain synchronizer and
+// FSM: about 80 ns if CLKINSTOPPED rises within 3-4 missing input periods, as
+// the bench models it. That detection time is an assumption to confirm on
+// hardware. RX words therefore leave through RX_HOLD c0 registers
+// cleared by rst: a word sampled at c0 edge s reaches dout_valid at edge
+// s + 1 + RX_HOLD, and any rst before then discards it. With rst_com asserted
+// asynchronously from phy_not_ready and the COM RX FIFO write gated by it, no
+// word sampled after the last FT601 edge is delivered as long as
+// phy_not_ready rises within (RX_HOLD + 1) c0 periods of that edge (130 ns at
+// RX_HOLD = 12). RX latency grows by RX_HOLD cycles; throughput is unchanged.
+// TX needs no hold: words accepted against a frozen TXE_N belong to the COM
+// session the loss aborts.
+//
 
 `timescale 1ns / 1ps
 
@@ -42,7 +59,8 @@
 // a reset, so Verilator's PROCASSINIT is waived for this module.
 /* verilator lint_off PROCASSINIT */
 module pcileech_ft601_phy #(
-    parameter integer GUARD_CYCLES = 3
+    parameter integer GUARD_CYCLES = 3,
+    parameter integer RX_HOLD      = 12
 ) (
     input               c0,
     input               c180,
@@ -58,8 +76,8 @@ module pcileech_ft601_phy #(
     output              FT601_WR_N,
     output              FT601_SIWU_N,
     // TO/FROM FIFO
-    output reg [31:0]   dout = 32'h0,
-    output reg          dout_valid = 1'b0,
+    output [31:0]       dout,
+    output              dout_valid,
     input [31:0]        din,
     input               din_wr_en,
     output              din_req_data,
@@ -68,6 +86,10 @@ module pcileech_ft601_phy #(
 );
 
     localparam [31:0] FILLER = 32'h66665555;
+
+    generate if ( RX_HOLD < 1 ) begin : g_bad_rx_hold
+        $error("RX_HOLD must be at least 1");
+    end endgenerate
 
     // -------------------------------------------------------------------------
     // Pads. c180 OLOGIC registers are FDPE on one shared PRE net (rst_c180),
@@ -162,12 +184,34 @@ module pcileech_ft601_phy #(
     end
 
     // -------------------------------------------------------------------------
-    // RX: one word per edge where the FT601 saw RD_N low with RXF_N low.
+    // RX: one word per edge where the FT601 saw RD_N low with RXF_N low, then
+    // RX_HOLD stages cleared by rst (see "Clock loss" above). The data stages
+    // have no reset, so they can map to shift-register LUTs.
     // -------------------------------------------------------------------------
+    reg [31:0]        rx_d0 = 32'h0;
+    reg               rx_v0 = 1'b0;
+    reg [31:0]        rx_hd [0:RX_HOLD-1];
+    reg [RX_HOLD-1:0] rx_hv = '0;
     always @ ( posedge c0 ) begin
-        dout_valid <= !rst && !in_rxf_n && !rd_d1;
-        dout       <= {in_d[7:0], in_d[15:8], in_d[23:16], in_d[31:24]};
+        rx_v0 <= !rst && !in_rxf_n && !rd_d1;
+        rx_d0 <= {in_d[7:0], in_d[15:8], in_d[23:16], in_d[31:24]};
     end
+    integer hk;
+    always @ ( posedge c0 ) begin
+        rx_hd[0] <= rx_d0;
+        for ( hk = 1; hk < RX_HOLD; hk = hk + 1 )
+            rx_hd[hk] <= rx_hd[hk-1];
+    end
+    always @ ( posedge c0 )
+        if ( rst )
+            rx_hv <= '0;
+        else begin
+            rx_hv[0] <= rx_v0;
+            for ( hk = 1; hk < RX_HOLD; hk = hk + 1 )
+                rx_hv[hk] <= rx_hv[hk-1];
+        end
+    assign dout       = rx_hd[RX_HOLD-1];
+    assign dout_valid = rx_hv[RX_HOLD-1];
 
     // -------------------------------------------------------------------------
     // TX queue. wp: next write, ip: next issue, ap: oldest unaccepted.

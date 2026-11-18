@@ -246,7 +246,8 @@ module pcileech_fifo #(
     // PCIe
     assign ro[272]      = pcie_present;                 // +022: PCIe PRSNT#
     assign ro[273]      = pcie_perst_n;                 //       PCIe PERST#
-    assign ro[287:274]  = 0;                            //       SLACK
+    assign ro[274]      = dcom.com_status[0];           //       FT601 TX accepted after refusal (sticky)
+    assign ro[287:275]  = 0;                            //       SLACK
     // CUSTOM_VALUE
     assign ro[319:288]  = PARAM_CUSTOM_VALUE;           // +024: CUSTOM VALUE
     // PCIe REQUESTER STATUS (R1): coherent clk_pcie snapshot, layout in pcileech_req_status.sv

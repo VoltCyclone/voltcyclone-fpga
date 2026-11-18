@@ -25,7 +25,9 @@ BENCH = ["tb_ft601_phy.sv", "ft601_model.sv", "prims_model.sv"]
 
 # (TCO_MIN, TCO_MAX, T_HIZ) in ns.
 CORNERS = [(3.5, 7.0, 6.0), (3.5, 3.5, 6.0), (7.0, 7.0, 6.0), (3.5, 7.0, 25.0)]
-SCENARIOS = [0, 1, 2, 3]
+# (scenario, extra plusargs). Scenario 4 runs at the modelled loss latency and
+# at 120 ns, so the hold keeps margin beyond the 80 ns model.
+SCENARIOS = [(0, []), (1, []), (2, []), (3, []), (4, ["+LOSS_NS=80"]), (4, ["+LOSS_NS=120"])]
 SEEDS = [1, 7, 42]
 
 # Clock/reset controller mutants, run against tb_ft601_clk.
@@ -44,11 +46,11 @@ CLK_MUTANTS = [
 # (name, original text, replacement). Each original must occur exactly once.
 MUTANTS = [
     ("rx_valid_unaligned",
-     "dout_valid <= !rst && !in_rxf_n && !rd_d1;",
-     "dout_valid <= !rst && !in_rxf_n && !o_rd_n;"),
+     "rx_v0 <= !rst && !in_rxf_n && !rd_d1;",
+     "rx_v0 <= !rst && !in_rxf_n && !o_rd_n;"),
     ("rx_valid_from_state",
-     "dout_valid <= !rst && !in_rxf_n && !rd_d1;",
-     "dout_valid <= !rst && !in_rxf_n && (state == S_RX);"),
+     "rx_v0 <= !rst && !in_rxf_n && !rd_d1;",
+     "rx_v0 <= !rst && !in_rxf_n && (state == S_RX);"),
     ("tx_accept_unaligned",
      "wire tx_accept = !wr_d1 && !in_txe_n;\n    wire tx_refuse = !wr_d1 &&  in_txe_n;",
      "wire tx_accept = !o_wr_n && !in_txe_n;\n    wire tx_refuse = !o_wr_n &&  in_txe_n;"),
@@ -78,8 +80,17 @@ MUTANTS = [
      ".PRE ( rst_c180 ), .D ( o_oe_n ), .Q ( FT601_OE_N ) );",
      ".PRE ( 1'b0 ), .D ( o_oe_n ), .Q ( FT601_OE_N ) );"),
     ("rx_no_byteswap",
-     "dout       <= {in_d[7:0], in_d[15:8], in_d[23:16], in_d[31:24]};",
-     "dout       <= in_d;"),
+     "rx_d0 <= {in_d[7:0], in_d[15:8], in_d[23:16], in_d[31:24]};",
+     "rx_d0 <= in_d;"),
+    ("rx_hold_one",
+     "parameter integer RX_HOLD      = 12",
+     "parameter integer RX_HOLD      = 1"),
+    ("rx_hold_six",
+     "parameter integer RX_HOLD      = 12",
+     "parameter integer RX_HOLD      = 6"),
+    ("rx_hold_not_flushed",
+     "        if ( rst )\n            rx_hv <= '0;\n        else begin",
+     "        begin"),
 ]
 
 
@@ -87,7 +98,8 @@ class CompileError(Exception):
     pass
 
 
-def run_one(rtl: Path, work: Path, corner, scen: int, seed: int) -> bool:
+def run_one(rtl: Path, work: Path, corner, scen, seed: int) -> bool:
+    scen, extra = scen
     tco_min, tco_max, thiz = corner
     vvp = work / "tb.vvp"
     cmd = [
@@ -98,7 +110,7 @@ def run_one(rtl: Path, work: Path, corner, scen: int, seed: int) -> bool:
     comp = subprocess.run(cmd, capture_output=True, text=True)
     if comp.returncode != 0:
         raise CompileError(comp.stdout + comp.stderr)
-    sim = subprocess.run(["vvp", "-n", str(vvp), f"+SCEN={scen}", f"+SEED={seed}"],
+    sim = subprocess.run(["vvp", "-n", str(vvp), f"+SCEN={scen}", f"+SEED={seed}", *extra],
                          capture_output=True, text=True, timeout=600)
     out = sim.stdout + sim.stderr
     errors = [ln for ln in out.splitlines() if "ERROR" in ln or "Assert" in ln]

@@ -11,7 +11,7 @@
 #           i_cdc_rst_pcie of a pcileech_tlps128_fifo_rst_window.
 #   CDC-15: only inside the four distributed-RAM FIFOs below, one per
 #           connected dout bit (the read-side output register, CE = rd_en).
-#   Info:   only CDC-3 (42) and CDC-9 (7), synchronizers with ASYNC_REG.
+#   Info:   only CDC-3 (43) and CDC-9 (7), synchronizers with ASYNC_REG.
 # It also fails when a CDC-11 synchronizer loses a stage or ASYNC_REG on any
 # stage, when a waiver other than FIFO Generator's own CDC-1 waivers on the
 # listed LUTRAM FIFOs exists, and when check_timing reports registers
@@ -86,7 +86,7 @@ foreach k {no_clock unconstrained_internal_endpoints} {
         bad "check_timing: $k $n"
     } else { puts "CDC_CHECK_OK check_timing $k 0" }
 }
-set info_expect {CDC-3 42 CDC-9 7}
+set info_expect {CDC-3 43 CDC-9 7}
 
 set seen11 {}
 foreach v [get_cdc_violations] {
