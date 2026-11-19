@@ -52,7 +52,7 @@ module pcileech_squirrel_top #(
     );
     
     // SYS
-    wire            rst;
+    reg            rst = 1'b1;  // clk register: async source for the COM and PCIe reset synchronizers
     
     // FIFO CTL <--> COM CTL
     wire [63:0]     com_dout;
@@ -76,14 +76,21 @@ module pcileech_squirrel_top #(
     // TickCount64 CLK
     // ----------------------------------------------------
 
+    // Two-stage synchronizer for the reset button: rst feeds reset
+    // synchronizers and must be a glitch-free clk register.
+    (* ASYNC_REG = "TRUE" *) reg [1:0] user_sw2_n_cdc = {2{1'b1}};
+    always @ ( posedge clk ) user_sw2_n_cdc <= { user_sw2_n_cdc[0], user_sw2_n };
+    wire user_sw2_n_sync = user_sw2_n_cdc[1];
+
     time tickcount64 = 0;
     time tickcount64_reload = 0;
     always @ ( posedge clk ) begin
-        tickcount64         <= user_sw2_n ? (tickcount64 + 1) : 0;
-        tickcount64_reload  <= user_sw2_n ? 0 : (tickcount64_reload + 1);
+        tickcount64         <= user_sw2_n_sync ? (tickcount64 + 1) : 0;
+        tickcount64_reload  <= user_sw2_n_sync ? 0 : (tickcount64_reload + 1);
     end
 
-    assign rst = ~user_sw2_n || ((tickcount64 < 64) ? 1'b1 : 1'b0);
+    always @ ( posedge clk )
+        rst <= ~user_sw2_n_sync || ((tickcount64 < 64) ? 1'b1 : 1'b0);
     assign ft601_rst_n = ~rst;
     wire led_pwronblink = ~user_sw1_n ^ (tickcount64[24] & (tickcount64[63:27] == 0));
     

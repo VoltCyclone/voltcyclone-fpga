@@ -53,6 +53,43 @@ module pcileech_pcie_a7x4(
     wire rst_pcie_user;
     wire rst_subsys = rst || rst_pcie_user || dfifo_pcie.pcie_rst_subsys;
     wire rst_pcie = rst || ~pcie_perst_n || dfifo_pcie.pcie_rst_core;
+
+    // Subsystem reset, clk_sys side: the asynchronous rst pins of the
+    // clk_sys<->clk_pcie FIFOs in the cfg and shadow paths. One clk_sys
+    // register, so no LUT and no clk_pcie term drives those pins directly.
+    // rst and pcie_rst_subsys are clk_sys registers. The core user reset is a
+    // clk_pcie register in the IP; it enters clk_sys asserted asynchronously
+    // (it holds while clk_pcie is stopped) and released synchronously.
+    wire rst_pcie_user_sys;
+    xpm_cdc_async_rst #(
+        .DEST_SYNC_FF               ( 4                         ),
+        .INIT_SYNC_FF               ( 0                         ),
+        .RST_ACTIVE_HIGH            ( 1                         )
+    ) i_cdc_rst_pcie_user_sys (
+        .src_arst                   ( rst_pcie_user             ),
+        .dest_clk                   ( clk_sys                   ),
+        .dest_arst                  ( rst_pcie_user_sys         )
+    );
+    reg rst_subsys_sys = 1'b1;
+    always @ ( posedge clk_sys )
+        rst_subsys_sys <= rst || dfifo_pcie.pcie_rst_subsys || rst_pcie_user_sys;
+
+    // Shadow configuration space controls, carried into clk_pcie. They are
+    // independent static enables (clk_sys registers in pcileech_fifo), so a
+    // per-bit two-stage synchronizer is enough; no word coherency is needed.
+    wire pcie_cfgtlp_en, pcie_cfgtlp_zero, pcie_cfgtlp_wren;
+    xpm_cdc_array_single #(
+        .DEST_SYNC_FF               ( 2                         ),
+        .INIT_SYNC_FF               ( 0                         ),
+        .SIM_ASSERT_CHK             ( 0                         ),
+        .SRC_INPUT_REG              ( 0                         ),  // sources are registers
+        .WIDTH                      ( 3                         )
+    ) i_cdc_cfgtlp (
+        .src_clk                    ( clk_sys                   ),
+        .src_in                     ( { dshadow2fifo.cfgtlp_wren, dshadow2fifo.cfgtlp_zero, dshadow2fifo.cfgtlp_en } ),
+        .dest_clk                   ( clk_pcie                  ),
+        .dest_out                   ( { pcie_cfgtlp_wren, pcie_cfgtlp_zero, pcie_cfgtlp_en } )
+    );
        
     // Buffer for differential system clock
     IBUFDS_GTE2 refclk_ibuf (.O(pcie_clk_c), .ODIV2(), .I(pcie_clk_p), .CEB(1'b0), .IB(pcie_clk_n));
@@ -72,6 +109,7 @@ module pcileech_pcie_a7x4(
     
     pcileech_pcie_cfg_a7 i_pcileech_pcie_cfg_a7(
         .rst                        ( rst_subsys                ),
+        .rst_sys                    ( rst_subsys_sys            ),
         .clk_sys                    ( clk_sys                   ),
         .clk_pcie                   ( clk_pcie                  ),
         .dfifo                      ( dfifo_cfg                 ),        
@@ -93,8 +131,12 @@ module pcileech_pcie_a7x4(
     
     pcileech_pcie_tlp_a7 i_pcileech_pcie_tlp_a7(
         .rst                        ( rst_subsys                ),
+        .rst_sys                    ( rst_subsys_sys            ),
         .clk_pcie                   ( clk_pcie                  ),
         .clk_sys                    ( clk_sys                   ),
+        .cfgtlp_en                  ( pcie_cfgtlp_en            ),
+        .cfgtlp_zero                ( pcie_cfgtlp_zero          ),
+        .cfgtlp_wren                ( pcie_cfgtlp_wren          ),
         .dfifo                      ( dfifo_tlp                 ),
         .tlps_tx                    ( tlps_tx.source            ),
         .tlps_rx                    ( tlps_rx.sink_lite         ),
@@ -156,7 +198,7 @@ module pcileech_pcie_a7x4(
         .cfg_mgmt_wr_rw1c_as_rw     ( ctx.cfg_mgmt_wr_rw1c_as_rw ), // <-
         .cfg_mgmt_di                ( ctx.cfg_mgmt_di           ),  // <- [31:0]
         .cfg_mgmt_wr_en             ( ctx.cfg_mgmt_wr_en        ),  // <-
-    
+
         // special core config
         //.pcie_cfg_vend_id           ( dfifo_pcie.pcie_cfg_vend_id       ),  // <- [15:0]
         //.pcie_cfg_dev_id            ( dfifo_pcie.pcie_cfg_dev_id        ),  // <- [15:0]

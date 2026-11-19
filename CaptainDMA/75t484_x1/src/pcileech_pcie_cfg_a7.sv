@@ -11,7 +11,8 @@
 `include "pcileech_header.svh"
 
 module pcileech_pcie_cfg_a7(
-    input                   rst,
+    input                   rst,            // clk_pcie synchronous reset
+    input                   rst_sys,        // clk_sys register: rst of the clk_sys<->clk_pcie FIFOs
     input                   clk_sys,
     input                   clk_pcie,
     IfPCIeFifoCfg.mp_pcie   dfifo,
@@ -43,7 +44,7 @@ module pcileech_pcie_cfg_a7(
     wire [3:0]      in_type     = in_data64[15:12];
 	
     fifo_64_64 i_fifo_pcie_cfg_tx(
-        .rst            ( rst                   ),
+        .rst            ( rst_sys               ),
         .wr_clk         ( clk_sys               ),
         .rd_clk         ( clk_pcie              ),
         .din            ( dfifo.tx_data         ),
@@ -64,7 +65,7 @@ module pcileech_pcie_cfg_a7(
     wire            pcie_cfg_rx_almost_full;
     
     fifo_32_32_clk2 i_fifo_pcie_cfg_rx(
-        .rst            ( rst                   ),
+        .rst            ( rst_sys               ),
         .wr_clk         ( clk_pcie              ),
         .rd_clk         ( clk_sys               ),
         .din            ( out_data              ),
