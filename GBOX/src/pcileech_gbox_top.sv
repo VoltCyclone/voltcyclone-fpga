@@ -41,7 +41,7 @@ module pcileech_gbox_top #(
     );
 
     // SYS
-    wire rst;
+    reg rst = 1'b1;  // clk register: async source for the COM and PCIe reset synchronizers
     wire clk;
     wire clk_com;
     
@@ -85,7 +85,8 @@ module pcileech_gbox_top #(
     time tickcount64 = 0;
     always @ ( posedge clk )
         tickcount64 <= tickcount64 + 1;
-    assign rst = (tickcount64 < 64) ? 1'b1 : 1'b0;
+    always @ ( posedge clk )
+        rst <= (tickcount64 < 64) ? 1'b1 : 1'b0;
     
     wire            led_pcie;
     OBUF led_ld1_obuf(.O(pcie_led), .I(led_pcie));

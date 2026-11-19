@@ -899,8 +899,8 @@ set obj [get_runs impl_1]
 set_property -name "part" -value "xc7a100tfgg484-1" -objects $obj
 set_property -name "strategy" -value "Performance_ExtraTimingOpt" -objects $obj
 set_property -name "steps.opt_design.args.directive" -value "ExploreWithRemap" -objects $obj
-set_property -name "steps.opt_design.args.more_options" -value "-debug_log" -objects $obj
-set_property -name "steps.opt_design.tcl.post" -value "[file normalize \"${origin_dir}/opt_design_post.tcl\"]" -objects $obj
+set_property -name {steps.opt_design.args.more options} -value "-debug_log" -objects $obj
+set_property -name "steps.opt_design.tcl.post" -value "[file normalize "${origin_dir}/opt_design_post.tcl"]" -objects $obj
 set_property -name "steps.place_design.args.directive" -value "ExtraTimingOpt" -objects $obj
 set_property -name "steps.phys_opt_design.args.directive" -value "Explore" -objects $obj
 set_property -name "steps.route_design.args.directive" -value "NoTimingRelaxation" -objects $obj

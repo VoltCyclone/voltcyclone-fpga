@@ -11,9 +11,14 @@
 `include "pcileech_header.svh"
 
 module pcileech_pcie_tlp_a7(
-    input                   rst,
+    input                   rst,            // clk_pcie synchronous reset
+    input                   rst_sys,        // clk_sys register: rst of the clk_sys<->clk_pcie shadow FIFOs
     input                   clk_pcie,
     input                   clk_sys,
+    // shadow controls already carried into clk_pcie (dshadow2fifo copies are clk_sys)
+    input                   cfgtlp_en,
+    input                   cfgtlp_zero,
+    input                   cfgtlp_wren,
     IfPCIeFifoTlp.mp_pcie   dfifo,
     
     // PCIe core receive/transmit data
@@ -47,8 +52,12 @@ module pcileech_pcie_tlp_a7(
     
     pcileech_tlps128_cfgspace_shadow i_pcileech_tlps128_cfgspace_shadow(
         .rst            ( rst                           ),
+        .rst_sys        ( rst_sys                       ),
         .clk_pcie       ( clk_pcie                      ),
         .clk_sys        ( clk_sys                       ),
+        .cfgtlp_en      ( cfgtlp_en                     ),
+        .cfgtlp_zero    ( cfgtlp_zero                   ),
+        .cfgtlp_wren    ( cfgtlp_wren                   ),
         .tlps_in        ( tlps_rx                       ),
         .pcie_id        ( pcie_id                       ),
         .dshadow2fifo   ( dshadow2fifo                  ),

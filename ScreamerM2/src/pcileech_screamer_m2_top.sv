@@ -49,7 +49,7 @@ module pcileech_screamer_m2_top #(
     );
     
     // SYS
-    wire            rst;
+    reg            rst = 1'b1;  // clk register: async source for the COM and PCIe reset synchronizers
     
     // FIFO CTL <--> COM CTL
     wire [63:0]     com_dout;
@@ -77,7 +77,8 @@ module pcileech_screamer_m2_top #(
     always @ ( posedge clk )
         tickcount64 <= tickcount64 + 1;
 
-    assign rst = (tickcount64 < 64) ? 1'b1 : 1'b0;
+    always @ ( posedge clk )
+        rst <= (tickcount64 < 64) ? 1'b1 : 1'b0;
     assign ft601_rst_n = ~rst;
     wire led_pwronblink = tickcount64[24] & (tickcount64[63:27] == 0);
     

@@ -131,6 +131,7 @@ set_property IOB TRUE [get_cells i_pcileech_com/i_pcileech_ft601/FT601_DATA_OUT_
 
 set_multicycle_path 2 -from [get_pins i_pcileech_com/i_pcileech_ft601/OE_reg/C] -to [get_ports {{ft601_be[*]} {ft601_data[*]}}]
 set_false_path -from [get_pins {tickcount64_reg[*]/C}]
+set_false_path -from [get_pins rst_reg/C]
 set_false_path -from [get_pins {i_pcileech_fifo/_pcie_core_config_reg[*]/C}]
 set_false_path -from [get_pins i_pcileech_pcie_a7x4/i_pcie_7x_0/inst/inst/user_lnk_up_int_reg/C] -to [get_pins {i_pcileech_fifo/_cmd_tx_din_reg[16]/D}]
 set_false_path -from [get_pins i_pcileech_pcie_a7x4/i_pcie_7x_0/inst/inst/user_reset_out_reg/C]

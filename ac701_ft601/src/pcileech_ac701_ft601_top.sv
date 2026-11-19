@@ -51,7 +51,7 @@ module pcileech_ac701_ft601_top #(
     
     // SYS
     wire            clk;
-    wire            rst;
+    reg            rst = 1'b1;  // clk register: async source for the COM and PCIe reset synchronizers
     
     // FIFO CTL <--> COM CTL
     wire [63:0]     com_dout;
@@ -85,6 +85,12 @@ module pcileech_ac701_ft601_top #(
     // TickCount64 CLK
     // ----------------------------------------------------
     
+    // Two-stage synchronizer for the reset button: rst feeds reset
+    // synchronizers and must be a glitch-free clk register.
+    (* ASYNC_REG = "TRUE" *) reg [1:0] gpio_sw_north_cdc = {2{1'b0}};
+    always @ ( posedge clk ) gpio_sw_north_cdc <= { gpio_sw_north_cdc[0], gpio_sw_north };
+    wire gpio_sw_north_sync = gpio_sw_north_cdc[1];
+
     time tickcount64 = 0;
     always @ ( posedge clk )
         tickcount64 <= tickcount64 + 1;
@@ -93,7 +99,8 @@ module pcileech_ac701_ft601_top #(
     OBUF led_ld1_obuf(.O( gpio_led[2] ), .I( ~led_pcie ));
     OBUF led_ld2_obuf(.O( gpio_led[1] ), .I( ~led_com ));
     
-    assign rst = gpio_sw_north | ((tickcount64 < 64) ? 1'b1 : 1'b0);
+    always @ ( posedge clk )
+        rst <= gpio_sw_north_sync | ((tickcount64 < 64) ? 1'b1 : 1'b0);
     assign ft601_rst_n = ~rst;
     
     // ----------------------------------------------------
